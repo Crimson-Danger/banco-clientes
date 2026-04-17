@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block content %}
+{% if batch.status == "PROCESSANDO" %}
+<meta http-equiv="refresh" content="5">
+{% endif %}
+<section class="dashboard-grid two-columns">
+    <div class="card stat-box">
+        <span>Referencia</span>
+        <strong>{{ "%02d" | format(batch.mes_referencia) }}/{{ batch.ano_referencia }}</strong>
+    </div>
+    <div class="card stat-box">
+        <span>Status</span>
+        <strong>{{ batch.status }}</strong>
+    </div>
+</section>
+
+{% if batch.status == "PROCESSANDO" %}
+<section class="card">
+    <h2>Importacao em andamento</h2>
+    <p class="muted">Essa tela atualiza sozinha a cada 5 segundos.</p>
+</section>
+{% endif %}
+
+<section class="dashboard-grid">
+    <div class="card">
+        <h2>Resumo do lote {{ batch.id }}</h2>
+        <div class="stack-list">
+            <div class="stack-item">
+                <div>
+                    <strong>Origem</strong>
+                    <p>{{ batch.origem_pasta }}</p>
+                </div>
+            </div>
+            <div class="stack-item">
+                <div>
+                    <strong>Usuario</strong>
+                    <p>{{ batch.usuario }}</p>
+                </div>
+            </div>
+            <div class="stack-item">
+                <div>
+                    <strong>Data da importacao</strong>
+                    <p>{{ batch.data_importacao }}</p>
+                </div>
+            </div>
+            <div class="stack-item">
+                <div>
+                    <strong>Resumo tecnico</strong>
+                    <p>{{ batch.resumo }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Indicadores</h2>
+        <div class="stack-list">
+            <div class="stack-item">
+                <div>
+                    <strong>Linhas lidas</strong>
+                    <p>Total somado dos arquivos do lote.</p>
+                </div>
+                <span class="count-pill">{{ total_rows }}</span>
+            </div>
+            <div class="stack-item">
+                <div>
+                    <strong>Linhas importadas</strong>
+                    <p>Registros realmente gravados no banco.</p>
+                </div>
+                <span class="count-pill">{{ imported_rows }}</span>
+            </div>
+            <div class="stack-item">
+                <div>
+                    <strong>Linhas descartadas</strong>
+                    <p>Diferenca entre lidas e importadas.</p>
+                </div>
+                <span class="count-pill">{{ skipped_rows }}</span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="card">
+    <div class="section-head">
+        <div>
+            <h2>Arquivos da campanha</h2>
+            <p>Monitor por arquivo importado.</p>
+        </div>
+        <a href="/history" class="inline-link">Voltar ao historico</a>
+    </div>
+    <table>
+        <thead>
+            <tr><th>Arquivo</th><th>Semana</th><th>Tipo</th><th>Linhas lidas</th><th>Linhas importadas</th><th>Descartadas</th></tr>
+        </thead>
+        <tbody>
+        {% for row in file_rows %}
+            <tr>
+                <td>{{ row.nome_arquivo }}</td>
+                <td>{{ row.semana_label }}</td>
+                <td>{{ row.tipo_arquivo }}</td>
+                <td>{{ row.total_linhas }}</td>
+                <td>{{ row.importadas }}</td>
+                <td>{{ row.total_linhas - row.importadas }}</td>
+            </tr>
+        {% else %}
+            <tr><td colspan="6">Nenhum arquivo neste lote.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="consult-shell">
+    <div class="consult-hero">
+        <div class="consult-hero-bar">Consulta Unica INSS</div>
+        <div class="consult-hero-body">
+            <p class="consult-kicker">Busca rapida por cadastro</p>
+            <h2>Pesquise por CPF, beneficio ou telefone</h2>
+            <form method="get" class="consult-search-form">
+                <input
+                    type="text"
+                    name="quick_value"
+                    value="{{ filters.quick_value }}"
+                    placeholder="{% if filters.quick_mode == 'telefone' %}Digite o telefone{% else %}Digite CPF ou numero do beneficio{% endif %}"
+                >
+                <button type="submit">Consultar</button>
+                <div class="consult-search-modes">
+                    <label>
+                        <input type="radio" name="quick_mode" value="cpf" {% if filters.quick_mode != 'telefone' %}checked{% endif %}>
+                        <span>CPF / Beneficio</span>
+                    </label>
+                    <label>
+                        <input type="radio" name="quick_mode" value="telefone" {% if filters.quick_mode == 'telefone' %}checked{% endif %}>
+                        <span>Telefone</span>
+                    </label>
+                </div>
+                <div class="consult-hidden-fields">
+                    <input type="hidden" name="year" value="{{ filters.year or '' }}">
+                    <input type="hidden" name="month" value="{{ filters.month or '' }}">
+                    <input type="hidden" name="week" value="{{ filters.week }}">
+                    <input type="hidden" name="uf" value="{{ filters.uf }}">
+                    <input type="hidden" name="city" value="{{ filters.city }}">
+                    <input type="hidden" name="esp" value="{{ filters.esp }}">
+                    <input type="hidden" name="margin_min" value="{{ filters.margin_min or '' }}">
+                    <input type="hidden" name="margin_max" value="{{ filters.margin_max or '' }}">
+                    <input type="hidden" name="age_min" value="{{ filters.age_min or '' }}">
+                    <input type="hidden" name="age_max" value="{{ filters.age_max or '' }}">
+                    <input type="hidden" name="has_phone" value="{% if filters.has_phone == true %}sim{% elif filters.has_phone == false %}nao{% endif %}">
+                    <input type="hidden" name="source_file" value="{{ filters.source_file }}">
+                    <input type="hidden" name="cpf" value="{{ filters.cpf }}">
+                    <input type="hidden" name="phone" value="{{ filters.phone }}">
+                    <input type="hidden" name="ddd" value="{{ filters.ddd }}">
+                    <input type="hidden" name="name" value="{{ filters.name }}">
+                </div>
+            </form>
+            <div class="consult-actions">
+                <a href="/clients" class="consult-action ghost">Limpar</a>
+                <a href="/exports?ddd={{ filters.ddd }}" class="consult-action">Gerar lista</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="consult-summary-strip">
+        <div class="summary-pill">
+            <span>Modo ativo</span>
+            <strong>{% if filters.quick_mode == 'telefone' %}Telefone{% else %}CPF / Beneficio{% endif %}</strong>
+        </div>
+        <div class="summary-pill">
+            <span>Resultados</span>
+            <strong>{{ result_count }}</strong>
+        </div>
+        <div class="summary-pill">
+            <span>Filtro rapido</span>
+            <strong>{{ filters.quick_value or 'Nao informado' }}</strong>
+        </div>
+    </div>
+</section>
+
+<section class="consult-grid">
+    <article class="card consult-card consult-results">
+        <div class="consult-card-head">
+            <h3>Ocorrencias Encontradas</h3>
+            <span class="consult-icon">*</span>
+        </div>
+        <div class="consult-table-wrap">
+            <table class="consult-table">
+                <thead>
+                    <tr><th>Nome</th><th>CPF</th><th>Telefone</th><th>Data Nasc.</th><th>Idade</th><th>DDB</th><th>Beneficio</th><th>Margem</th><th>Margem Disponivel</th><th>Margem RMC</th></tr>
+                </thead>
+                <tbody>
+                {% for row in results %}
+                    <tr>
+                        <td>{{ row.nome }}</td>
+                        <td>{{ row.cpf }}</td>
+                        <td>{{ row.telefone | phone_br }}</td>
+                        <td>{{ row.dt_nasc or '-' }}</td>
+                        <td>{{ row.idade if row.idade is not none else '-' }}</td>
+                        <td>{{ row.ddb }}</td>
+                        <td>{{ row.nu_nb }}</td>
+                        <td>{{ row.vl_rmi | brl }}</td>
+                        <td>{{ row.vl_margem | brl }}</td>
+                        <td>{{ row.vl_rmc | brl }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="10">Nenhum resultado.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+</section>
+
+<section class="consult-secondary-grid">
+    <article class="card consult-card consult-profile">
+        <div class="consult-card-head">
+            <h3>Dados Principais</h3>
+            <span class="consult-icon">*</span>
+        </div>
+        {% if highlight %}
+        <div class="profile-lines">
+            <p><strong>Nome:</strong> {{ highlight.nome }}</p>
+            <p><strong>CPF:</strong> {{ highlight.cpf }}</p>
+            <p><strong>Telefone:</strong> {{ highlight.telefone | phone_br }}</p>
+            <p><strong>Data Nasc.:</strong> {{ highlight.dt_nasc or 'Nao informado' }}</p>
+            <p><strong>Idade:</strong> {{ highlight.idade if highlight.idade is not none else 'Nao informado' }}</p>
+            <p><strong>DDB:</strong> {{ highlight.ddb }}</p>
+            <p><strong>Beneficio:</strong> {{ highlight.nu_nb }}</p>
+            <p><strong>Margem:</strong> {{ highlight.vl_rmi | brl }}</p>
+            <p><strong>Margem Disponivel:</strong> {{ highlight.vl_margem | brl }}</p>
+            <p><strong>Margem RMC:</strong> {{ highlight.vl_rmc | brl }}</p>
+        </div>
+        {% else %}
+        <p class="muted">Nenhum cliente localizado com os filtros atuais.</p>
+        {% endif %}
+    </article>
+
+    <article class="card consult-card consult-filters">
+        <div class="consult-card-head">
+            <h3>Filtros Avancados</h3>
+            <span class="consult-icon">*</span>
+        </div>
+        <form method="get" class="form-grid consult-filter-grid">
+            <input type="hidden" name="quick_mode" value="{{ filters.quick_mode }}">
+            <input type="hidden" name="quick_value" value="{{ filters.quick_value }}">
+            <label>CPF<input type="text" name="cpf" value="{{ filters.cpf }}"></label>
+            <label>Telefone<input type="text" name="phone" value="{{ filters.phone }}"></label>
+            <label>DDD<input type="text" name="ddd" maxlength="2" value="{{ filters.ddd }}"></label>
+            <label>Nome<input type="text" name="name" value="{{ filters.name }}"></label>
+            <label>Arquivo<input type="text" name="source_file" value="{{ filters.source_file }}"></label>
+            <label>Ano<input type="number" name="year" value="{{ filters.year or '' }}"></label>
+            <label>Mes<input type="number" name="month" value="{{ filters.month or '' }}"></label>
+            <label>Semana<input type="text" name="week" value="{{ filters.week }}"></label>
+            <label>UF<input type="text" name="uf" maxlength="2" value="{{ filters.uf }}"></label>
+            <label>Cidade<input type="text" name="city" value="{{ filters.city }}"></label>
+            <label>ESP<input type="text" name="esp" value="{{ filters.esp }}"></label>
+            <label>Margem min<input type="text" name="margin_min" value="{{ filters.margin_min or '' }}"></label>
+            <label>Margem max<input type="text" name="margin_max" value="{{ filters.margin_max or '' }}"></label>
+            <label>Idade min<input type="number" name="age_min" min="0" value="{{ filters.age_min or '' }}"></label>
+            <label>Idade max<input type="number" name="age_max" min="0" value="{{ filters.age_max or '' }}"></label>
+            <label>Telefone disponivel
+                <select name="has_phone">
+                    <option value="" {% if filters.has_phone is none %}selected{% endif %}>Todos</option>
+                    <option value="sim" {% if filters.has_phone == true %}selected{% endif %}>Com telefone</option>
+                    <option value="nao" {% if filters.has_phone == false %}selected{% endif %}>Sem telefone</option>
+                </select>
+            </label>
+            <div class="consult-filter-actions">
+                <button type="submit">Aplicar filtros</button>
+                <a href="/clients" class="consult-action ghost inline">Limpar tudo</a>
+            </div>
+        </form>
+    </article>
+</section>
+{% endblock %}

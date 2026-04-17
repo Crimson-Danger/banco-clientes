@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post" enctype="multipart/form-data" class="list-builder">
+    <section class="card builder-main">
+        <div class="section-head">
+            <div>
+                <h2>Importar campanha</h2>
+                <p>Monte a importacao por etapas e, se quiser, traga apenas as especies desejadas.</p>
+            </div>
+        </div>
+        {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+        <div class="builder-sections">
+            <section class="filter-block">
+                <div class="filter-block-head">
+                    <span class="filter-step">1</span>
+                    <div>
+                        <h3>Referencia da campanha</h3>
+                        <p>Defina o mes, ano e dados basicos do lote.</p>
+                    </div>
+                </div>
+                <div class="form-grid compact-grid">
+                    <label>Ano<input type="number" name="year" min="2020" max="2100" value="2025" required></label>
+                    <label>Mes<input type="number" name="month" min="1" max="12" value="8" required></label>
+                    <label>Usuario<input type="text" name="user_name" value="operador"></label>
+                    <label>Origem logica<input type="text" name="origin_folder" value="upload_web"></label>
+                </div>
+                <p class="muted">A semana do lote sera calculada automaticamente pelo DDB dos registros.</p>
+            </section>
+
+            <section class="filter-block">
+                <div class="filter-block-head">
+                    <span class="filter-step">2</span>
+                    <div>
+                        <h3>Arquivos de entrada</h3>
+                        <p>Importe por pasta do servidor ou envie os arquivos manualmente.</p>
+                    </div>
+                </div>
+                <div class="form-grid compact-grid">
+                    <label>Pasta no servidor<input type="text" name="server_folder" placeholder="D:\Bases\Agosto2025"></label>
+                    <label class="full">Arquivos do lote<input type="file" name="files" multiple></label>
+                </div>
+            </section>
+
+            <section class="filter-block">
+                <div class="filter-block-head">
+                    <span class="filter-step">3</span>
+                    <div>
+                        <h3>Especies desejadas</h3>
+                        <p>Se marcar especies, o sistema importa somente essas. Se deixar vazio, importa tudo.</p>
+                    </div>
+                </div>
+                <div class="species-picker">
+                    <label class="species-chip"><input type="checkbox" name="allowed_species" value="21"> 21</label>
+                    <label class="species-chip"><input type="checkbox" name="allowed_species" value="32"> 32</label>
+                    <label class="species-chip"><input type="checkbox" name="allowed_species" value="36"> 36</label>
+                    <label class="species-chip"><input type="checkbox" name="allowed_species" value="87"> 87</label>
+                    <label class="species-chip"><input type="checkbox" name="allowed_species" value="88"> 88</label>
+                    <label class="species-chip"><input type="checkbox" name="allowed_species" value="94"> 94</label>
+                    <label class="species-chip"><input type="checkbox" name="allowed_species" value="95"> 95</label>
+                    <label class="species-chip"><input type="checkbox" name="allowed_species" value="96"> 96</label>
+                </div>
+                <div class="form-grid compact-grid top-gap">
+                    <label>Outras especies<input type="text" name="custom_species" placeholder="Ex.: 41, 42, 46"></label>
+                </div>
+            </section>
+        </div>
+    </section>
+
+    <aside class="card builder-side">
+        <h2>Resumo da importacao</h2>
+        <div class="builder-tips">
+            <h3>Como usar</h3>
+            <ul class="plain-list">
+                <li>Informe o ano e o mes da campanha.</li>
+                <li>Escolha a pasta do servidor quando os arquivos ja estiverem na maquina.</li>
+                <li>Marque especies so quando quiser filtrar a entrada.</li>
+                <li>Se nenhuma especie for marcada, tudo entra.</li>
+            </ul>
+        </div>
+        <button type="submit" class="primary-wide">Importar arquivos</button>
+    </aside>
+</form>
+
+{% if summary %}
+<section class="card">
+    <h2>Resumo da importacao</h2>
+    <ul class="plain-list">
+        <li>Lote: {{ summary.batch_id }}</li>
+        <li>Arquivos importados: {{ summary.files_imported }}</li>
+        <li>Arquivos ignorados: {{ summary.files_skipped }}</li>
+        <li>Linhas importadas: {{ summary.rows_imported }}</li>
+        <li>Linhas invalidas: {{ summary.invalid_rows }}</li>
+        <li>Linhas fora das especies escolhidas: {{ summary.species_filtered_rows }}</li>
+    </ul>
+    {% if last_batch_id %}
+    <p><a href="/history/{{ last_batch_id }}" class="inline-link">Abrir monitor desta importacao</a></p>
+    {% endif %}
+    {% if summary.duplicate_files %}
+    <p>Arquivos duplicados: {{ summary.duplicate_files | join(", ") }}</p>
+    {% endif %}
+</section>
+{% endif %}
+{% endblock %}

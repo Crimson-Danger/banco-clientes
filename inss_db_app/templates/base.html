@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title if title else "Banco de Clientes INSS" }}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <span class="brand-mark">IN</span>
+                <div>
+                    <strong>Banco de Clientes</strong>
+                    <small>INSS</small>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="/" class="nav-link">Inicio</a>
+                <a href="/import" class="nav-link">Importacao</a>
+                <a href="/clients" class="nav-link">Segmentacao</a>
+                <a href="/exports" class="nav-link">Listas</a>
+                <a href="/history" class="nav-link">Historico</a>
+            </nav>
+        </aside>
+        <div class="main-shell">
+            <header class="topbar">
+                <div>
+                    <h1>Painel de campanhas INSS</h1>
+                    <p>Importacao, consulta e geracao de listas em uma base central.</p>
+                </div>
+                <a href="/exports" class="top-action">Gerar lista de contatos</a>
+            </header>
+            <main class="page">
+                {% block content %}{% endblock %}
+            </main>
+        </div>
+    </div>
+</body>
+</html>

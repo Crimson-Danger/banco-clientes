@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post" class="campaign-builder">
+    <section class="campaign-main">
+        <div class="campaign-hero card">
+            <div class="campaign-hero-bar">Geracao de Campanha</div>
+            <div class="campaign-hero-body">
+                <p class="campaign-kicker">Filtros segmentados</p>
+                <h2>Monte sua lista de abordagem por beneficio, localidade e qualificacao</h2>
+                <p class="muted">A estrutura foi reorganizada para ficar mais rapida de preencher, mantendo as funcoes atuais do sistema.</p>
+            </div>
+        </div>
+
+        <section class="campaign-section card">
+            <div class="campaign-section-head">
+                <div>
+                    <span class="campaign-section-label">Filtros Beneficios</span>
+                    <h3>Periodo, margem e origem</h3>
+                </div>
+            </div>
+            <div class="campaign-benefit-layout">
+                <div class="campaign-filter-card">
+                    <span class="campaign-filter-card-label">Periodo de referencia</span>
+                    <div class="campaign-grid campaign-period-grid">
+                        <label class="campaign-field">Ano
+                            <input type="number" name="year" placeholder="2025">
+                        </label>
+                        <label class="campaign-field campaign-field-month">Mes
+                            <input type="number" name="month" min="1" max="12" placeholder="8">
+                        </label>
+                        <label class="campaign-field">DDB (Inicial)
+                            <input type="text" name="ddb_start" placeholder="01/01/2026">
+                        </label>
+                        <label class="campaign-field">DDB (Final)
+                            <input type="text" name="ddb_end" placeholder="31/01/2026">
+                        </label>
+                    </div>
+                </div>
+
+                <div class="campaign-filter-card">
+                    <span class="campaign-filter-card-label">Faixa de margem</span>
+                    <div class="campaign-grid campaign-range-grid">
+                        <label class="campaign-field">Margem disponivel (Inicial)
+                            <div class="field-prefix">
+                                <span>R$</span>
+                                <input type="text" name="margin_min" placeholder="Escrever...">
+                            </div>
+                        </label>
+                        <label class="campaign-field">Margem disponivel (Final)
+                            <div class="field-prefix">
+                                <span>R$</span>
+                                <input type="text" name="margin_max" placeholder="Escrever...">
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="campaign-filter-card">
+                    <span class="campaign-filter-card-label">Faixa etaria</span>
+                    <div class="campaign-grid campaign-range-grid">
+                        <label class="campaign-field">Idade minima
+                            <input type="number" name="age_min" min="0" placeholder="Ex: 60">
+                        </label>
+                        <label class="campaign-field">Idade maxima
+                            <input type="number" name="age_max" min="0" placeholder="Ex: 75">
+                        </label>
+                    </div>
+                </div>
+
+                <div class="campaign-filter-card campaign-filter-card-compact">
+                    <span class="campaign-filter-card-label">Telefone principal</span>
+                    <label class="campaign-field">DDD
+                        <input type="text" name="ddd" placeholder="Ex: 11 ou 11,21,31" value="{{ request.query_params.get('ddd', '') if request and request.query_params else '' }}">
+                    </label>
+                </div>
+            </div>
+        </section>
+
+        <section class="campaign-section card">
+            <div class="campaign-section-head">
+                <div>
+                    <span class="campaign-section-label">Filtros Localidade</span>
+                    <h3>Estados e municipios</h3>
+                </div>
+            </div>
+            <div class="campaign-grid two location">
+                <div class="campaign-pane">
+                    <h4>Estados</h4>
+                    <p class="campaign-helper-text subtle">Selecione rapidamente uma UF ou digite abaixo.</p>
+                    <div class="uf-quick-grid">
+                        <button type="button" class="campaign-pill active uf-quick-button" data-uf-value="">Todos</button>
+                        {% for state in ["AC","AL","AM","AP","BA","CE","DF","ES","GO","MA","MG","MS","MT","PA","PB","PE","PI","PR","RJ","RN","RO","RR","RS","SC","SE","SP","TO"] %}
+                        <button type="button" class="uf-chip-button" data-uf-value="{{ state }}">{{ state }}</button>
+                        {% endfor %}
+                    </div>
+                    <label class="full campaign-inline-field">UF
+                        <input type="text" name="uf" maxlength="2" placeholder="Digite ou selecione a UF..." value="{{ request.query_params.get('uf', '') if request and request.query_params else '' }}">
+                    </label>
+                </div>
+                <div class="campaign-pane">
+                    <h4>Municipios</h4>
+                    <p class="campaign-helper-text subtle">Informe o municipio para campanhas locais ou deixe em branco para toda a UF.</p>
+                    <label class="full campaign-inline-field">Cidade
+                        <input type="text" name="city" placeholder="Pesquise municipio..." value="{{ request.query_params.get('city', '') if request and request.query_params else '' }}">
+                    </label>
+                </div>
+            </div>
+        </section>
+
+        <section class="campaign-section card">
+            <div class="campaign-section-head">
+                <div>
+                    <span class="campaign-section-label">Especies beneficio</span>
+                    <h3>Filtros prontos e qualificacao</h3>
+                </div>
+            </div>
+            <div class="campaign-species-layout">
+                <div class="campaign-filter-card campaign-species-card">
+                    <div class="campaign-pill-row large-gap">
+                        <button type="button" class="campaign-pill active species-preset-button" data-species-preset="consignaveis">Somente consignaveis</button>
+                    </div>
+                    <p class="campaign-helper-text">Especies consignaveis. Clique para selecionar as que deseja incluir na campanha.</p>
+                    <div class="species-fixed-picker" data-species-group="consignaveis">
+                        {% for code in ["01","02","03","04","05","06","07","08","11","12","19","20","21","22","23","24","26","27","28","29","30","32","33","34","37","38","40","41","42","43","44","45","46","49","51","52","54","55","56","57","58","59","60","72","78","81","82","83","84","87","88","89","92","93","96"] %}
+                        <label class="species-fixed-chip">
+                            <input type="checkbox" name="esp" value="{{ code }}">
+                            <span>{{ code }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="campaign-filter-card campaign-output-card">
+                    <span class="campaign-filter-card-label">Configuracao da lista</span>
+                    <div class="campaign-grid campaign-output-grid">
+                        <label class="campaign-field">Telefone
+                            <select name="has_phone">
+                                <option value="">Todos</option>
+                                <option value="sim">Com telefone</option>
+                                <option value="nao">Sem telefone</option>
+                            </select>
+                        </label>
+                        <label class="campaign-field">Formato de saida
+                            <select name="file_format">
+                                <option value="xlsx" selected>Excel (.xlsx)</option>
+                                <option value="csv">CSV</option>
+                            </select>
+                        </label>
+                        <label class="campaign-field">Auditoria
+                            <select name="include_audit">
+                                <option value="false" selected>Sem auditoria</option>
+                                <option value="true">Incluir auditoria</option>
+                            </select>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </section>
+
+    <aside class="card campaign-side">
+        <h2>Resumo da campanha</h2>
+        <div class="campaign-side-group">
+            <div class="campaign-note">
+                <strong>Preenchimento rapido</strong>
+                <p>Use ano, mes e intervalo de DDB para encontrar quem comecou a receber o beneficio no periodo desejado.</p>
+            </div>
+            <div class="campaign-note">
+                <strong>Operacao comercial</strong>
+                <p>Para listas ativas, prefira marcar apenas registros com telefone e exportar em Excel.</p>
+            </div>
+            <div class="campaign-note">
+                <strong>Busca direcionada</strong>
+                <p>Combine periodo, margem, idade e DDD para chegar em listas menores sem perder consistencia.</p>
+            </div>
+        </div>
+        <button type="submit" class="primary-wide campaign-submit">Gerar campanha</button>
+    </aside>
+</form>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const presetButton = document.querySelector("[data-species-preset='consignaveis']");
+    const speciesGroup = document.querySelector("[data-species-group='consignaveis']");
+    if (!presetButton || !speciesGroup) {
+        return;
+    }
+
+    presetButton.addEventListener("click", function () {
+        const checkboxes = speciesGroup.querySelectorAll("input[type='checkbox'][name='esp']");
+        checkboxes.forEach(function (checkbox) {
+            checkbox.checked = true;
+        });
+    });
+
+    const ufInput = document.querySelector("input[name='uf']");
+    const ufButtons = document.querySelectorAll("[data-uf-value]");
+    ufButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+            if (!ufInput) {
+                return;
+            }
+            ufInput.value = button.getAttribute("data-uf-value") || "";
+            ufButtons.forEach(function (item) {
+                item.classList.remove("active");
+            });
+            button.classList.add("active");
+        });
+    });
+});
+</script>
+
+<section class="card">
+    <h2>Historico de exportacoes</h2>
+    <table>
+        <thead><tr><th>Data</th><th>Arquivo</th><th>Registros</th></tr></thead>
+        <tbody>
+        {% for item in exports %}
+            {% set filename = item.arquivo_saida.split('\\')[-1].split('/')[-1] %}
+            <tr>
+                <td>{{ item.criado_em }}</td>
+                <td><a href="/downloads/{{ filename }}">{{ filename }}</a></td>
+                <td>{{ item.total_registros }}</td>
+            </tr>
+        {% else %}
+            <tr><td colspan="3">Nenhuma exportacao registrada.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

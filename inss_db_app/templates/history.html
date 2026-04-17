@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>Historico de lotes</h2>
+    {% if message %}
+    <p class="success">{{ message }}</p>
+    {% endif %}
+    <table>
+        <thead><tr><th>ID</th><th>Referencia</th><th>Origem</th><th>Status</th><th>Arquivos</th><th>Data</th><th>Resumo</th><th>Monitor</th><th>Acao</th></tr></thead>
+        <tbody>
+        {% for batch in batches %}
+            <tr>
+                <td>{{ batch.id }}</td>
+                <td>{{ "%02d" | format(batch.mes_referencia) }}/{{ batch.ano_referencia }}</td>
+                <td>{{ batch.origem_pasta }}</td>
+                <td>{{ batch.status }}</td>
+                <td>{{ file_counts[batch.id] }}</td>
+                <td>{{ batch.data_importacao }}</td>
+                <td>{{ batch.resumo }}</td>
+                <td><a href="/history/{{ batch.id }}" class="inline-link">Ver detalhes</a></td>
+                <td>
+                    <form method="post" action="/history/{{ batch.id }}/delete" onsubmit="return confirm('Apagar a campanha {{ batch.id }}?');">
+                        <button type="submit" class="danger-button">Apagar</button>
+                    </form>
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="9">Nenhum lote importado.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

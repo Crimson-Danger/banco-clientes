@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="dashboard-grid">
+    <div class="panel soft-panel">
+        <span class="eyebrow">Abrangencia</span>
+        <strong class="panel-title">Base historica consolidada</strong>
+        <p>Todos os lotes importados ficam organizados por mes, semana, arquivo e CPF.</p>
+        <div class="chip-row">
+            <span class="chip">Clientes unicos: {{ total_clients }}</span>
+            <span class="chip">Com telefone: {{ total_with_phone }}</span>
+        </div>
+    </div>
+    <div class="stats-row">
+        <div class="card stat-box"><span>Campanhas</span><strong>{{ total_batches }}</strong></div>
+        <div class="card stat-box"><span>Arquivos</span><strong>{{ total_files }}</strong></div>
+        <div class="card stat-box"><span>Registros</span><strong>{{ total_occurrences }}</strong></div>
+    </div>
+</section>
+
+<section class="dashboard-grid two-columns">
+    <div class="card chart-card">
+        <h2>Qualidade de contato</h2>
+        <div class="progress-stack">
+            <div class="progress-bar">
+                <span class="fill green" style="width: {{ phone_ratio }}%"></span>
+            </div>
+            <div class="legend-row">
+                <span>Com telefone</span>
+                <strong>{{ phone_ratio }}%</strong>
+            </div>
+            <div class="progress-bar muted-bar">
+                <span class="fill orange" style="width: {{ no_phone_ratio }}%"></span>
+            </div>
+            <div class="legend-row">
+                <span>Sem telefone</span>
+                <strong>{{ no_phone_ratio }}%</strong>
+            </div>
+        </div>
+    </div>
+
+    <div class="card chart-card">
+        <h2>Base por UF</h2>
+        <div class="mini-chart">
+            {% for item in states_chart %}
+            <div class="mini-bar-row">
+                <span>{{ item.uf }}</span>
+                <div class="mini-bar"><span style="width: {{ item.pct }}%"></span></div>
+                <strong>{{ item.count }}</strong>
+            </div>
+            {% else %}
+            <p>Nenhum dado de UF importado ainda.</p>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+<section class="dashboard-grid two-columns">
+    <div class="card">
+        <h2>Ultimas campanhas</h2>
+        <div class="stack-list">
+            {% for batch in latest_batches %}
+            <div class="stack-item">
+                <div>
+                    <strong>{{ "%02d" | format(batch.mes_referencia) }}/{{ batch.ano_referencia }}</strong>
+                    <p>{{ batch.origem_pasta }}</p>
+                </div>
+                <span class="status-pill">{{ batch.status }}</span>
+            </div>
+            {% else %}
+            <p>Nenhuma campanha importada.</p>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Ultimas exportacoes</h2>
+        <div class="stack-list">
+            {% for item in latest_exports %}
+            {% set filename = item.arquivo_saida.split('\\')[-1].split('/')[-1] %}
+            <div class="stack-item">
+                <div>
+                    <a href="/downloads/{{ filename }}"><strong>{{ filename }}</strong></a>
+                    <p>{{ item.criado_em }}</p>
+                </div>
+                <span class="count-pill">{{ item.total_registros }}</span>
+            </div>
+            {% else %}
+            <p>Nenhuma exportacao registrada.</p>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+{% endblock %}
