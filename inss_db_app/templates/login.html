@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block auth_content %}
+<section class="login-shell">
+    <div class="login-layout">
+        <article class="login-showcase">
+            <span class="login-eyebrow">Operacao unificada</span>
+            <h1>Banco de Clientes para campanhas com leitura clara e acao rapida.</h1>
+            <p>Consulta, importacao, historico e geracao de listas em uma interface mais limpa para INSS, Governo e Prefeitura.</p>
+            <div class="login-feature-grid">
+                <div class="login-feature-card">
+                    <strong>Segmentacao</strong>
+                    <span>Indicadores visuais por base e filtros mais legiveis.</span>
+                </div>
+                <div class="login-feature-card">
+                    <strong>Operacao</strong>
+                    <span>Fila de exportacao, historico por etapas e auditoria centralizada.</span>
+                </div>
+                <div class="login-feature-card">
+                    <strong>Qualidade</strong>
+                    <span>Feedback claro para erro, sucesso, validacao e vazio de dados.</span>
+                </div>
+            </div>
+        </article>
+        <article class="card login-card login-card--refined">
+            <div class="login-brand">
+                <span class="brand-mark">IN</span>
+                <div>
+                    <strong>Banco de Clientes</strong>
+                    <small>INSS, Governo e Prefeitura</small>
+                </div>
+            </div>
+            <div class="login-card-head">
+                <h2>Acesso ao sistema</h2>
+                <p class="muted">Entre com seu usuario e senha para abrir o painel operacional.</p>
+            </div>
+            {% if error %}
+            <p class="error">{{ error }}</p>
+            {% endif %}
+            <form method="post" class="login-form">
+                <input type="hidden" name="next" value="{{ next or '/' }}">
+                <label>Usuario
+                    <input type="text" name="username" autocomplete="username" required>
+                </label>
+                <label>Senha
+                    <input type="password" name="password" autocomplete="current-password" required>
+                </label>
+                <button type="submit" class="primary-wide">Entrar no painel</button>
+            </form>
+            <div class="login-footer-note">
+                <span>Ambiente protegido</span>
+                <strong>Somente usuarios autorizados</strong>
+            </div>
+        </article>
+    </div>
+</section>
+{% endblock %}

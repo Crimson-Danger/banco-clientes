@@ -1,16 +1,43 @@
 {% extends "base.html" %}
 {% block content %}
+{% if message %}
+<p class="success">{{ message }}</p>
+{% endif %}
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
+
+<section class="consult-shell">
+    <div class="consult-segment-switch">
+        {% for value, label in base_segment_options %}
+        <a href="/exports?base_segment={{ value }}" class="segment-tab segment-tab--{{ value|lower }}{% if selected_base_segment == value %} active{% endif %}">
+            <span class="segment-tab-kicker">Geracao</span>
+            <strong>{{ label }}</strong>
+        </a>
+        {% endfor %}
+    </div>
+</section>
+
 <form method="post" class="campaign-builder">
+    <input type="hidden" name="base_segment" value="{{ selected_base_segment or 'INSS' }}">
+
     <section class="campaign-main">
         <div class="campaign-hero card">
-            <div class="campaign-hero-bar">Geracao de Campanha</div>
+            <div class="campaign-hero-bar">Geracao de Campanha {{ selected_base_segment or 'INSS' }}</div>
             <div class="campaign-hero-body">
-                <p class="campaign-kicker">Filtros segmentados</p>
-                <h2>Monte sua lista de abordagem por beneficio, localidade e qualificacao</h2>
-                <p class="muted">A estrutura foi reorganizada para ficar mais rapida de preencher, mantendo as funcoes atuais do sistema.</p>
+                {% if selected_base_segment == "INSS" %}
+                <p class="campaign-kicker">Modelo atual</p>
+                <h2>Monte sua lista por beneficio, localidade e qualificacao</h2>
+                <p class="muted">A tela abaixo mantem o fluxo ja usado para INSS.</p>
+                {% else %}
+                <p class="campaign-kicker">Campanhas Publicas</p>
+                <h2>Gere listas de GOV e PREF por margem, cargo e orgao</h2>
+                <p class="muted">A classificacao automatica gera uma coluna CAMPANHA no arquivo final.</p>
+                {% endif %}
             </div>
         </div>
 
+        {% if selected_base_segment == "INSS" %}
         <section class="campaign-section card">
             <div class="campaign-section-head">
                 <div>
@@ -70,7 +97,7 @@
                 <div class="campaign-filter-card campaign-filter-card-compact">
                     <span class="campaign-filter-card-label">Telefone principal</span>
                     <label class="campaign-field">DDD
-                        <input type="text" name="ddd" placeholder="Ex: 11 ou 11,21,31" value="{{ request.query_params.get('ddd', '') if request and request.query_params else '' }}">
+                        <input type="text" name="ddd" placeholder="Ex: 11 ou 11,21,31">
                     </label>
                 </div>
             </div>
@@ -84,26 +111,12 @@
                 </div>
             </div>
             <div class="campaign-grid two location">
-                <div class="campaign-pane">
-                    <h4>Estados</h4>
-                    <p class="campaign-helper-text subtle">Selecione rapidamente uma UF ou digite abaixo.</p>
-                    <div class="uf-quick-grid">
-                        <button type="button" class="campaign-pill active uf-quick-button" data-uf-value="">Todos</button>
-                        {% for state in ["AC","AL","AM","AP","BA","CE","DF","ES","GO","MA","MG","MS","MT","PA","PB","PE","PI","PR","RJ","RN","RO","RR","RS","SC","SE","SP","TO"] %}
-                        <button type="button" class="uf-chip-button" data-uf-value="{{ state }}">{{ state }}</button>
-                        {% endfor %}
-                    </div>
-                    <label class="full campaign-inline-field">UF
-                        <input type="text" name="uf" maxlength="2" placeholder="Digite ou selecione a UF..." value="{{ request.query_params.get('uf', '') if request and request.query_params else '' }}">
-                    </label>
-                </div>
-                <div class="campaign-pane">
-                    <h4>Municipios</h4>
-                    <p class="campaign-helper-text subtle">Informe o municipio para campanhas locais ou deixe em branco para toda a UF.</p>
-                    <label class="full campaign-inline-field">Cidade
-                        <input type="text" name="city" placeholder="Pesquise municipio..." value="{{ request.query_params.get('city', '') if request and request.query_params else '' }}">
-                    </label>
-                </div>
+                <label class="campaign-field">UF
+                    <input type="text" name="uf" maxlength="2" placeholder="SP">
+                </label>
+                <label class="campaign-field">Cidade
+                    <input type="text" name="city" placeholder="Municipio">
+                </label>
             </div>
         </section>
 
@@ -156,11 +169,197 @@
                 </div>
             </div>
         </section>
+        {% else %}
+        <section class="campaign-section card">
+            <div class="campaign-section-head">
+                <div>
+                    <span class="campaign-section-label">Perfil de campanha</span>
+                    <h3>Classificacao automatica</h3>
+                </div>
+            </div>
+            <div class="campaign-grid three">
+                <label class="campaign-field">Modelo pronto
+                    <select name="campaign_profile">
+                        <option value="">Todos</option>
+                        <option value="MARGEM_0">Margem 0</option>
+                        <option value="MARGEM_BAIXA">Margem baixa</option>
+                        <option value="MARGEM_LIVRE">Margem livre</option>
+                        <option value="PROFESSOR">Professor</option>
+                        <option value="SAUDE">Saude</option>
+                        <option value="ADMINISTRATIVO">Administrativo</option>
+                        <option value="SEGURANCA">Seguranca</option>
+                        <option value="APOSENTADO">Aposentado / pensionista</option>
+                        <option value="REFIN">Refin / reaproveitamento</option>
+                    </select>
+                </label>
+                <label class="campaign-field">Fonte / base importada
+                    <select name="base_source" id="public-base-source">
+                        <option value="">Todas as bases</option>
+                        {% for source in available_sources %}
+                        <option value="{{ source }}" {% if selected_base_source == source %}selected{% endif %}>{{ source }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label class="campaign-field">DDD
+                    <input type="text" name="ddd" placeholder="Ex: 11 ou 11,21">
+                </label>
+            </div>
+        </section>
+
+        <section class="campaign-section card">
+            <div class="campaign-section-head">
+                <div>
+                    <span class="campaign-section-label">Segmentacao publica</span>
+                    <h3>Margem, salario e localidade</h3>
+                </div>
+            </div>
+            <div class="campaign-grid three">
+                <label class="campaign-field">Margem minima
+                    <div class="field-prefix">
+                        <span>R$</span>
+                        <input type="text" name="margin_min" placeholder="0">
+                    </div>
+                </label>
+                <label class="campaign-field">Margem maxima
+                    <div class="field-prefix">
+                        <span>R$</span>
+                        <input type="text" name="margin_max" placeholder="300">
+                    </div>
+                </label>
+                <label class="campaign-field">Telefone
+                    <select name="has_phone">
+                        <option value="">Todos</option>
+                        <option value="sim">Com telefone</option>
+                        <option value="nao">Sem telefone</option>
+                    </select>
+                </label>
+                <label class="campaign-field">Salario minimo
+                    <div class="field-prefix">
+                        <span>R$</span>
+                        <input type="text" name="salary_min" placeholder="1500">
+                    </div>
+                </label>
+                <label class="campaign-field">Salario maximo
+                    <div class="field-prefix">
+                        <span>R$</span>
+                        <input type="text" name="salary_max" placeholder="8000">
+                    </div>
+                </label>
+                <label class="campaign-field">Formato de saida
+                    <select name="file_format">
+                        <option value="xlsx" selected>Excel (.xlsx)</option>
+                        <option value="csv">CSV</option>
+                    </select>
+                </label>
+                <label class="campaign-field">Auditoria
+                    <select name="include_audit">
+                        <option value="false" selected>Sem auditoria</option>
+                        <option value="true">Incluir auditoria</option>
+                    </select>
+                </label>
+            </div>
+        </section>
+
+        <section class="campaign-section card">
+            <div class="campaign-section-head">
+                <div>
+                    <span class="campaign-section-label">Qualificacao funcional</span>
+                    <h3>Orgao, cargo e vinculo</h3>
+                </div>
+            </div>
+            <div class="campaign-grid three">
+                <label class="campaign-field">Entidade / orgao
+                    <details class="campaign-multi-select">
+                        <summary data-empty-label="Todas">Todas</summary>
+                        <div class="campaign-multi-select-panel">
+                            {% for value in public_filter_options.entidades %}
+                            <label class="campaign-multi-option">
+                                <input type="checkbox" name="entidade" value="{{ value }}">
+                                <span>{{ value }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </details>
+                </label>
+                <label class="campaign-field">Convenio
+                    <details class="campaign-multi-select">
+                        <summary data-empty-label="Todos">Todos</summary>
+                        <div class="campaign-multi-select-panel">
+                            {% for value in public_filter_options.convenios %}
+                            <label class="campaign-multi-option">
+                                <input type="checkbox" name="convenio" value="{{ value }}">
+                                <span>{{ value }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </details>
+                </label>
+                <label class="campaign-field">Servico
+                    <details class="campaign-multi-select">
+                        <summary data-empty-label="Todos">Todos</summary>
+                        <div class="campaign-multi-select-panel">
+                            {% for value in public_filter_options.servicos %}
+                            <label class="campaign-multi-option">
+                                <input type="checkbox" name="servico_publico" value="{{ value }}">
+                                <span>{{ value }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </details>
+                </label>
+                <label class="campaign-field">Situacao
+                    <details class="campaign-multi-select">
+                        <summary data-empty-label="Todas">Todas</summary>
+                        <div class="campaign-multi-select-panel">
+                            {% for value in public_filter_options.situacoes %}
+                            <label class="campaign-multi-option">
+                                <input type="checkbox" name="situacao" value="{{ value }}">
+                                <span>{{ value }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </details>
+                </label>
+                <label class="campaign-field">Cargo / funcao
+                    <details class="campaign-multi-select">
+                        <summary data-empty-label="Todos">Todos</summary>
+                        <div class="campaign-multi-select-panel">
+                            {% for value in public_filter_options.cargos %}
+                            <label class="campaign-multi-option">
+                                <input type="checkbox" name="cargo" value="{{ value }}">
+                                <span>{{ value }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </details>
+                </label>
+                <label class="campaign-field">Tipo de vinculo
+                    <details class="campaign-multi-select">
+                        <summary data-empty-label="Todos">Todos</summary>
+                        <div class="campaign-multi-select-panel">
+                            {% for value in public_filter_options.tipos_vinculo %}
+                            <label class="campaign-multi-option">
+                                <input type="checkbox" name="tipo_vinculo" value="{{ value }}">
+                                <span>{{ value }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </details>
+                </label>
+            </div>
+            {% if not selected_base_source %}
+            <p class="muted">Selecione uma base importada para carregar as opcoes de orgao, cargo, situacao e vinculo.</p>
+            {% else %}
+            <p class="muted">Clique no campo para abrir o menu e marque quantas opcoes quiser.</p>
+            {% endif %}
+        </section>
+        {% endif %}
     </section>
 
     <aside class="card campaign-side">
         <h2>Resumo da campanha</h2>
         <div class="campaign-side-group">
+            {% if selected_base_segment == "INSS" %}
             <div class="campaign-note">
                 <strong>Preenchimento rapido</strong>
                 <p>Use ano, mes e intervalo de DDB para encontrar quem comecou a receber o beneficio no periodo desejado.</p>
@@ -169,15 +368,121 @@
                 <strong>Operacao comercial</strong>
                 <p>Para listas ativas, prefira marcar apenas registros com telefone e exportar em Excel.</p>
             </div>
+            {% else %}
             <div class="campaign-note">
-                <strong>Busca direcionada</strong>
-                <p>Combine periodo, margem, idade e DDD para chegar em listas menores sem perder consistencia.</p>
+                <strong>Como sai a campanha</strong>
+                <p>O arquivo final inclui CAMPANHA com o padrao GOV/PREF + UF + perfil funcional + faixa de margem.</p>
             </div>
+            <div class="campaign-note">
+                <strong>Ordem de priorizacao</strong>
+                <p>A classificacao considera cargo, situacao funcional e faixa de margem. O filtro de modelo pronto reduz o lote antes da exportacao.</p>
+            </div>
+            {% endif %}
         </div>
-        <button type="submit" class="primary-wide campaign-submit">Gerar campanha</button>
+        <div class="campaign-side-actions">
+            <button type="submit" class="primary-wide campaign-submit">Gerar campanha na fila</button>
+            <button type="submit" class="primary-wide campaign-submit" formaction="/exports/updated-base">Gerar base atualizada na fila</button>
+            <button type="submit" class="secondary-wide campaign-submit" formaction="/exports/cpf-enrichment">Gerar lista de CPFs na fila</button>
+        </div>
     </aside>
 </form>
 
+<section class="card export-job-card">
+    <div class="section-head">
+        <div>
+            <h2>Fila de exportacoes</h2>
+            <p>Todas as exportacoes entram na fila e liberam download quando o status virar concluido.</p>
+        </div>
+    </div>
+    <div class="table-scroll-shell">
+    <table>
+        <thead><tr><th>Data</th><th>Status</th><th>Tipo</th><th>Registros</th><th>Arquivo</th><th>Erro</th></tr></thead>
+        <tbody>
+        {% for job in export_jobs %}
+            <tr>
+                <td>{{ job.created_at }}</td>
+                <td>{{ job.status }}</td>
+                <td>
+                    {% if job.job_type == "campaign" %}Campanha
+                    {% elif job.job_type == "cpf_enrichment" %}Lista de CPFs
+                    {% elif job.job_type == "updated_base" %}Base atualizada
+                    {% else %}{{ job.job_type }}
+                    {% endif %}
+                </td>
+                <td>{{ job.total_records }}</td>
+                <td>
+                    {% if job.output_file %}
+                        {% set filename = job.output_file.split('\\')[-1].split('/')[-1] %}
+                        <a href="/downloads/{{ filename }}">{{ filename }}</a>
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+                <td>{{ job.error_message or '-' }}</td>
+            </tr>
+        {% else %}
+            <tr><td colspan="6">Nenhuma exportacao em fila ainda.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</section>
+
+<section class="campaign-enrichment-shell">
+    <article class="card campaign-enrichment-card">
+        <div class="campaign-section-head">
+            <div>
+                <span class="campaign-section-label">Enriquecimento telefonico</span>
+                <h3>Retorno de telefones</h3>
+                <p class="muted">Suba o arquivo devolvido pelo Lemit ou NovaVida. O sistema cruza por CPF, registra a fonte e atualiza telefone, e-mail, endereco, cidade e outros campos preenchidos no retorno.</p>
+            </div>
+        </div>
+        <form method="post" action="/exports/phone-enrichment-import" enctype="multipart/form-data" class="campaign-enrichment-form">
+            <label class="campaign-field campaign-enrichment-source">Fonte
+                <select name="source_name">
+                    <option value="LEMIT">Lemit</option>
+                    <option value="NOVAVIDA">NovaVida</option>
+                </select>
+            </label>
+            <label class="campaign-field campaign-enrichment-file">Arquivo de retorno
+                <input type="file" name="files" accept=".csv,.xlsx,.xlsm,.xls" multiple required class="campaign-file-input">
+            </label>
+            <div class="campaign-inline-actions campaign-enrichment-actions">
+                <button type="submit" class="top-action">Importar retorno</button>
+            </div>
+        </form>
+    </article>
+
+    <article class="card campaign-enrichment-card">
+        <div class="campaign-section-head">
+            <div>
+                <span class="campaign-section-label">Historico recente</span>
+                <h3>Ultimos enriquecimentos</h3>
+            </div>
+        </div>
+        <div class="campaign-enrichment-table">
+            <div class="table-scroll-shell">
+            <table>
+                <thead><tr><th>Data</th><th>CPF</th><th>Telefone</th><th>Fonte</th></tr></thead>
+                <tbody>
+                {% for item in phone_enrichments %}
+                    <tr>
+                        <td>{{ item.criado_em }}</td>
+                        <td>{{ item.cpf }}</td>
+                        <td>{{ item.telefone | phone_br }}</td>
+                        <td>{{ item.fonte }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="4">Nenhum retorno importado ainda.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+        </div>
+    </article>
+</section>
+
+{% if selected_base_segment == "INSS" %}
 <script>
 document.addEventListener("DOMContentLoaded", function () {
     const presetButton = document.querySelector("[data-species-preset='consignaveis']");
@@ -192,26 +497,18 @@ document.addEventListener("DOMContentLoaded", function () {
             checkbox.checked = true;
         });
     });
-
-    const ufInput = document.querySelector("input[name='uf']");
-    const ufButtons = document.querySelectorAll("[data-uf-value]");
-    ufButtons.forEach(function (button) {
-        button.addEventListener("click", function () {
-            if (!ufInput) {
-                return;
-            }
-            ufInput.value = button.getAttribute("data-uf-value") || "";
-            ufButtons.forEach(function (item) {
-                item.classList.remove("active");
-            });
-            button.classList.add("active");
-        });
-    });
 });
 </script>
+{% endif %}
 
-<section class="card">
-    <h2>Historico de exportacoes</h2>
+<section class="card export-history-card">
+    <div class="section-head">
+        <div>
+            <h2>Historico de exportacoes</h2>
+            <p>Arquivos concluidos e prontos para download.</p>
+        </div>
+    </div>
+    <div class="table-scroll-shell">
     <table>
         <thead><tr><th>Data</th><th>Arquivo</th><th>Registros</th></tr></thead>
         <tbody>
@@ -227,5 +524,51 @@ document.addEventListener("DOMContentLoaded", function () {
         {% endfor %}
         </tbody>
     </table>
+    </div>
 </section>
+
+{% if selected_base_segment != "INSS" %}
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const sourceSelect = document.getElementById("public-base-source");
+    const multiSelects = document.querySelectorAll(".campaign-multi-select");
+    if (!sourceSelect) {
+        return;
+    }
+    sourceSelect.addEventListener("change", function () {
+        const params = new URLSearchParams();
+        params.set("base_segment", "{{ selected_base_segment }}");
+        if (sourceSelect.value) {
+            params.set("base_source", sourceSelect.value);
+        }
+        window.location.href = "/exports?" + params.toString();
+    });
+
+    multiSelects.forEach(function (details) {
+        const summary = details.querySelector("summary");
+        const checkboxes = details.querySelectorAll('input[type="checkbox"]');
+        const emptyLabel = summary?.dataset.emptyLabel || "Todos";
+        const refreshLabel = function () {
+            const checked = Array.from(checkboxes).filter(function (item) { return item.checked; });
+            if (!summary) {
+                return;
+            }
+            if (!checked.length) {
+                summary.textContent = emptyLabel;
+                return;
+            }
+            if (checked.length === 1) {
+                summary.textContent = checked[0].value;
+                return;
+            }
+            summary.textContent = checked.length + " selecionados";
+        };
+        checkboxes.forEach(function (checkbox) {
+            checkbox.addEventListener("change", refreshLabel);
+        });
+        refreshLabel();
+    });
+});
+</script>
+{% endif %}
 {% endblock %}

@@ -36,6 +36,9 @@ class Settings:
     exports_dir: Path = Path(os.getenv("EXPORTS_DIR", str(PROJECT_DIR / "data" / "exports")))
     host: str = os.getenv("APP_HOST", "0.0.0.0")
     port: int = int(os.getenv("APP_PORT", "8000"))
+    session_secret_key: str = os.getenv("APP_SESSION_SECRET", "inss-clientes-session-secret")
+    default_admin_username: str = os.getenv("APP_DEFAULT_ADMIN_USERNAME", "admin")
+    default_admin_password: str = os.getenv("APP_DEFAULT_ADMIN_PASSWORD", "admin123")
 
 
 settings = Settings()

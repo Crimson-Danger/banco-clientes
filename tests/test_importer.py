@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from inss_db_app.database import Base
@@ -15,13 +15,17 @@ from inss_db_app.importer import (
     delete_batch,
     detect_week_label,
     export_clients,
+    export_cpfs_for_enrichment,
+    export_updated_clients_from_latest_enrichment,
+    import_phone_enrichments,
     import_files,
+    normalize_base_segment,
     normalize_date_text,
     normalize_row,
     query_clients,
     week_label_from_ddb,
 )
-from inss_db_app.models import ClientOccurrence
+from inss_db_app.models import Client, ClientOccurrence, EnrichmentImportItem, PhoneEnrichment
 from inss_db_app.schemas import ImportRequest
 
 
@@ -63,6 +67,17 @@ def test_normalize_row_with_dot_decimal() -> None:
     assert normalized["vl_margem"] == Decimal("531.30")
     assert normalized["vl_rmi"] == Decimal("1518.00")
     assert normalized["vl_rmc"] == Decimal("75.90")
+
+
+def test_normalize_date_text_accepts_datetime_strings() -> None:
+    assert normalize_date_text("13/11/1963 00:00:00") == "13/11/1963"
+    assert normalize_date_text("1963-11-13 00:00:00") == "13/11/1963"
+
+
+def test_normalize_row_preserves_original_short_cpf() -> None:
+    normalized = normalize_row({"CPF": "6034578", "NOME": "DIANA"})
+    assert normalized["cpf"] == "00006034578"
+    assert normalized["cpf_original"] == "6034578"
 
 
 def test_normalize_row_calculates_margin_and_rmc_when_missing() -> None:
@@ -323,11 +338,14 @@ def test_query_clients_filters_by_ddb_range_with_unpadded_dates(tmp_path: Path) 
 
 
 def test_query_clients_filters_by_age_range(tmp_path: Path) -> None:
+    today = date.today()
+    exact_sixty = today.replace(year=today.year - 60)
+    still_fifty_nine = today.replace(year=today.year - 60) if (today.month, today.day) == (12, 31) else date(today.year - 60, today.month, min(today.day + 1, 28))
     csv_path = tmp_path / "age_range.csv"
     csv_path.write_text(
         "CPF;NOME;NU-NB;ESP;DDB;DT-NASC;VL-RMI;VL MARGEM;VL RMC;UF;CIDADE;TELEFONE1\n"
-        "12345678900;MARIA SILVA;111222333;21;05/01/2026;16/04/1966;R$ 100,00;R$ 50,00;R$ 10,00;SP;SAO PAULO;11999999999\n"
-        "99988877766;ANA LIMA;444555666;87;02/02/2026;17/04/1966;R$ 200,00;R$ 80,00;R$ 15,00;RJ;RIO DE JANEIRO;21988887777\n"
+        f"12345678900;MARIA SILVA;111222333;21;05/01/2026;{exact_sixty.strftime('%d/%m/%Y')};R$ 100,00;R$ 50,00;R$ 10,00;SP;SAO PAULO;11999999999\n"
+        f"99988877766;ANA LIMA;444555666;87;02/02/2026;{still_fifty_nine.strftime('%d/%m/%Y')};R$ 200,00;R$ 80,00;R$ 15,00;RJ;RIO DE JANEIRO;21988887777\n"
         "11122233344;JOSE LIMA;777888999;32;02/02/2026;01/01/1980;R$ 200,00;R$ 80,00;R$ 15,00;RJ;RIO DE JANEIRO;21988887778\n",
         encoding="utf-8",
     )
@@ -455,6 +473,61 @@ def test_export_clients_xlsx(tmp_path: Path) -> None:
     assert export_path.suffix == ".xlsx"
 
 
+def test_export_updated_clients_from_latest_enrichment_uses_last_return(tmp_path: Path) -> None:
+    source_csv = tmp_path / "source_updated.csv"
+    source_csv.write_text(
+        "CPF;NOME;UF;CIDADE;TELEFONE1\n"
+        "12345678900;MARIA SILVA;SP;SAO PAULO;11999999999\n",
+        encoding="utf-8",
+    )
+    return_csv = tmp_path / "return_updated.csv"
+    return_csv.write_text(
+        "CPF;NOME;NOME_MAE;SEXO;NASC;RENDA;LOGRADOURO;NUMERO;COMPLEMENTO;BAIRRO;CIDADE;UF;CEP;CEL1;FLGWHATSCEL1;EMAIL1\n"
+        "12345678900;MARIA SILVA;JOANA SILVA;F;1980-05-19 00:00:00;3200,50;RUA A;45;AP 2;CENTRO;CAMPINAS;SP;13000000;11911112222;SIM;maria@exemplo.com\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(session, ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[source_csv]))
+    import_phone_enrichments(session, [return_csv], source_name="NOVAVIDA", imported_by="tester")
+
+    export_path = export_updated_clients_from_latest_enrichment(session, base_segment="INSS", file_format="csv")
+    content = export_path.read_text(encoding="utf-8-sig")
+    assert "11911112222" in content
+    assert "SIM" in content
+    assert "maria@exemplo.com" in content
+    assert "CAMPINAS" in content
+    assert "RUA A, 45, AP 2, CENTRO" in content
+
+
+def test_export_updated_clients_from_latest_enrichment_includes_cpfs_without_new_phone_log(tmp_path: Path) -> None:
+    source_csv = tmp_path / "source_latest.csv"
+    source_csv.write_text(
+        "CPF;NOME;UF;CIDADE;TELEFONE1\n"
+        "12345678900;MARIA SILVA;SP;SAO PAULO;11999999999\n"
+        "22233344455;JOAO LIMA;SP;SANTOS;11988887777\n",
+        encoding="utf-8",
+    )
+    return_csv = tmp_path / "return_latest.csv"
+    return_csv.write_text(
+        "CPF;NOME;CIDADE;UF;EMAIL1\n"
+        "12345678900;MARIA SILVA;CAMPINAS;SP;maria@exemplo.com\n"
+        "22233344455;JOAO LIMA;GUARUJA;SP;joao@exemplo.com\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(session, ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[source_csv]))
+    import_phone_enrichments(session, [return_csv], source_name="NOVAVIDA", imported_by="tester")
+
+    export_path = export_updated_clients_from_latest_enrichment(session, base_segment="INSS", file_format="csv")
+    content = export_path.read_text(encoding="utf-8-sig")
+    assert "12345678900" in content
+    assert "22233344455" in content
+    assert "maria@exemplo.com" in content
+    assert "joao@exemplo.com" in content
+
+
 def test_delete_batch(tmp_path: Path) -> None:
     csv_path = tmp_path / "delete.csv"
     csv_path.write_text(
@@ -551,3 +624,484 @@ def test_import_skips_duplicate_rows_in_same_file(tmp_path: Path) -> None:
     assert summary.invalid_rows == 1
     rows = query_clients(session, FilterSet(year=2025, month=8))
     assert len(rows) == 1
+
+
+def test_export_cpfs_for_enrichment_deduplicates_cpfs(tmp_path: Path) -> None:
+    csv_path = tmp_path / "cpf_export.csv"
+    csv_path.write_text(
+        "CPF;NOME;NU-NB;ESP;DDB;VL-RMI;VL MARGEM;VL RMC;UF;CIDADE;TELEFONE1\n"
+        "12345678900;MARIA SILVA;111;21;21/01/2026;100;50;10;SP;SAO PAULO;11999999999\n"
+        "12345678900;MARIA SILVA;222;21;22/01/2026;100;50;10;SP;SAO PAULO;11888888888\n"
+        "98765432100;JOSE LIMA;333;21;23/01/2026;100;50;10;RJ;RIO;21999999999\n",
+        encoding="utf-8",
+    )
+    session = make_session()
+    import_files(session, ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[csv_path]))
+
+    export_path = export_cpfs_for_enrichment(session, FilterSet(), file_format="csv")
+    content = export_path.read_text(encoding="utf-8-sig")
+    assert content.count("12345678900") == 1
+    assert content.count("98765432100") == 1
+
+
+def test_import_phone_enrichments_updates_occurrences_and_logs_history(tmp_path: Path) -> None:
+    source_csv = tmp_path / "origem.csv"
+    source_csv.write_text(
+        "CPF;NOME;NU-NB;ESP;DDB;VL-RMI;VL MARGEM;VL RMC;UF;CIDADE;TELEFONE1;TELEFONE2\n"
+        "12345678900;MARIA SILVA;111;21;21/01/2026;100;50;10;SP;SAO PAULO;11999999999;1133334444\n",
+        encoding="utf-8",
+    )
+    return_csv = tmp_path / "retorno.csv"
+    return_csv.write_text(
+        "CPF;LEMIT;TELEFONE2\n"
+        "12345678900;11911112222;11922223333\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(session, ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[source_csv]))
+
+    summary = import_phone_enrichments(session, [return_csv], source_name="LEMIT", imported_by="tester")
+    assert summary.clients_matched == 1
+    assert summary.clients_updated == 1
+    assert summary.phones_added == 2
+
+    occurrence = session.execute(select(ClientOccurrence).where(ClientOccurrence.cpf == "12345678900")).scalar_one()
+    assert occurrence.telefone1 == "11911112222"
+    assert occurrence.telefone2 == "11922223333"
+    assert occurrence.telefone3 == "11999999999"
+
+    client = session.get(Client, "12345678900")
+    assert client is not None
+    assert client.melhor_telefone == "11911112222"
+    assert client.tem_telefone is True
+
+    history = session.execute(select(PhoneEnrichment).order_by(PhoneEnrichment.telefone)).scalars().all()
+    assert [item.telefone for item in history] == ["11911112222", "11922223333"]
+    imported_items = session.execute(select(EnrichmentImportItem).where(EnrichmentImportItem.arquivo_origem == "retorno.csv")).scalars().all()
+    assert len(imported_items) == 1
+
+
+def test_import_phone_enrichments_updates_other_available_fields(tmp_path: Path) -> None:
+    source_csv = tmp_path / "origem_enriquecimento.csv"
+    source_csv.write_text(
+        "CPF;NOME;UF;CIDADE;TELEFONE1\n"
+        "12345678900;MARIA SILVA;SP;SAO PAULO;11999999999\n",
+        encoding="utf-8",
+    )
+    return_csv = tmp_path / "retorno_novavida.csv"
+    return_csv.write_text(
+        "CPF;NOME;NOME_MAE;SEXO;NASC;RENDA;TIPO;TITULO;LOGRADOURO;NUMERO;COMPLEMENTO;BAIRRO;CIDADE;UF;CEP;CEL1;FLGWHATSCEL1;EMAIL1;EMAIL2\n"
+        "12345678900;MARIA SILVA;JOANA SILVA;F;1980-05-19 00:00:00;3200,50;EFETIVO;ANALISTA;RUA A;45;AP 2;CENTRO;CAMPINAS;SP;13000000;11911112222;SIM;maria@exemplo.com;maria2@exemplo.com\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(session, ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[source_csv]))
+
+    summary = import_phone_enrichments(session, [return_csv], source_name="NOVAVIDA", imported_by="tester")
+    assert summary.clients_matched == 1
+    assert summary.clients_updated == 1
+    assert summary.data_fields_updated == 1
+
+    occurrence = session.execute(select(ClientOccurrence).where(ClientOccurrence.cpf == "12345678900")).scalar_one()
+    assert occurrence.nome_mae == "JOANA SILVA"
+    assert occurrence.sexo == "F"
+    assert occurrence.dt_nasc == "19/05/1980"
+    assert occurrence.logradouro == "RUA A"
+    assert occurrence.numero == "45"
+    assert occurrence.complemento == "AP 2"
+    assert occurrence.bairro == "CENTRO"
+    assert occurrence.cidade == "CAMPINAS"
+    assert occurrence.cep == "13000000"
+    assert occurrence.email == "maria@exemplo.com"
+    assert occurrence.telefone1 == "11911112222"
+    assert "FLGWHATSCEL1" in occurrence.extras_json
+
+    rows = query_clients(session, FilterSet(base_segment="INSS", cpf="12345678900"))
+    assert len(rows) == 1
+    assert rows[0]["nome_mae"] == "JOANA SILVA"
+    assert rows[0]["email"] == "maria@exemplo.com"
+    assert rows[0]["cidade"] == "CAMPINAS"
+    assert rows[0]["whatsapp_telefone1"] == "SIM"
+
+
+def test_normalize_row_supports_government_fields_and_extras() -> None:
+    row = canonicalize_row_keys(
+        {
+            "CPF": "12345678900",
+            "NOME HIGIENIZADO": "MARIA SILVA",
+            "MATRÍCULA": "ABC123",
+            "PIS": "123.45678.90-1",
+            "ENTIDADE": "PREFEITURA",
+            "SECRETARIA": "SAUDE",
+            "Convenio": "GOV BA",
+            "Celular Atual": "(71) 99111-2222",
+            "FIXO2": "(71) 3333-4444",
+            "NASC": "01/02/1980",
+            "CARGO EXTRA": "ANALISTA",
+        }
+    )
+    normalized = normalize_row(row)
+    assert normalized["nome"] == "MARIA SILVA"
+    assert normalized["matricula"] == "ABC123"
+    assert normalized["pis"] == "12345678901"
+    assert normalized["telefone1"] == "71991112222"
+    assert normalized["telefone2"] == "7133334444"
+    assert "CARGO EXTRA" in str(normalized["extras_json"])
+
+
+def test_normalize_base_segment_accepts_aliases() -> None:
+    assert normalize_base_segment("gov") == "GOVERNO"
+    assert normalize_base_segment("pref") == "PREFEITURA"
+    assert normalize_base_segment("inss") == "INSS"
+    assert normalize_base_segment("qualquer") == "INSS"
+
+
+def test_import_files_government_stays_separated_from_inss_queries(tmp_path: Path) -> None:
+    inss_csv = tmp_path / "inss.csv"
+    inss_csv.write_text(
+        "CPF;NOME;NU-NB;ESP;DDB;VL-RMI;VL MARGEM;VL RMC;UF;CIDADE;TELEFONE1\n"
+        "11122233344;CLIENTE INSS;111;21;21/01/2026;100;50;10;BA;SALVADOR;71999999999\n",
+        encoding="utf-8",
+    )
+    gov_csv = tmp_path / "gov.csv"
+    gov_csv.write_text(
+        "CPF;NOME HIGIENIZADO;MATRÍCULA;PIS;ENTIDADE;Celular Atual;NASC;UF;CIDADE\n"
+        "11122233344;CLIENTE GOV;MAT-1;12345678901;PREFEITURA;71988887777;01/02/1980;BA;JUAZEIRO\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[inss_csv], base_segment="INSS"),
+    )
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[gov_csv], base_segment="GOV", base_source="BAHIA"),
+    )
+
+    inss_rows = query_clients(session, FilterSet())
+    gov_rows = query_clients(session, FilterSet(base_segment="GOV"))
+    assert len(inss_rows) == 1
+    assert len(gov_rows) == 1
+    assert inss_rows[0]["telefone"] == "71999999999"
+    assert gov_rows[0]["telefone"] == "71988887777"
+
+    client = session.get(Client, "11122233344")
+    assert client is not None
+    assert client.tem_inss is True
+    assert client.tem_governo is True
+    assert client.matricula_atual == "MAT-1"
+    assert client.pis_atual == "12345678901"
+
+
+def test_import_files_prefeitura_stays_separated_from_government_and_inss(tmp_path: Path) -> None:
+    gov_csv = tmp_path / "gov.csv"
+    gov_csv.write_text(
+        "CPF;NOME HIGIENIZADO;MATRICULA;PIS;ENTIDADE;Celular Atual;NASC;UF;CIDADE\n"
+        "33322211100;CLIENTE GOV;MAT-GOV;12345678901;GOVERNO ESTADUAL;71988887777;01/02/1980;BA;SALVADOR\n",
+        encoding="utf-8",
+    )
+    prefeitura_csv = tmp_path / "prefeitura.csv"
+    prefeitura_csv.write_text(
+        "CPF;NOME DO SERVIDOR;MATRICULA;ENTIDADE;SECRETARIA;TELEFONE_01;NASC;UF;CIDADE\n"
+        "33322211100;CLIENTE PREF;MAT-PREF;PREFEITURA DE JUAZEIRO;SAUDE;74991112222;01/02/1980;BA;JUAZEIRO\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[gov_csv], base_segment="GOVERNO", base_source="BAHIA"),
+    )
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[prefeitura_csv], base_segment="PREFEITURA", base_source="JUAZEIRO"),
+    )
+
+    gov_rows = query_clients(session, FilterSet(base_segment="GOVERNO"))
+    prefeitura_rows = query_clients(session, FilterSet(base_segment="PREFEITURA"))
+    assert len(gov_rows) == 1
+    assert len(prefeitura_rows) == 1
+    assert gov_rows[0]["telefone"] == "71988887777"
+    assert prefeitura_rows[0]["telefone"] == "74991112222"
+    assert gov_rows[0]["matricula"] == "MAT-GOV"
+    assert prefeitura_rows[0]["matricula"] == "MAT-PREF"
+
+    client = session.get(Client, "33322211100")
+    assert client is not None
+    assert client.tem_inss is False
+    assert client.tem_governo is True
+
+
+def test_query_clients_government_does_not_recalculate_margin_or_rmc(tmp_path: Path) -> None:
+    gov_csv = tmp_path / "gov_margin.csv"
+    gov_csv.write_text(
+        "CPF;NOME HIGIENIZADO;MATRICULA;SALARIO;Margem Liquida;Margem Bruta;Margem Utilizada;UF;CIDADE;Celular Atual;NASC\n"
+        "55544433322;CLIENTE GOV;MAT-55;2500,00;300,00;500,00;200,00;CE;FORTALEZA;85991112222;01/02/1980\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[gov_csv], base_segment="GOVERNO", base_source="CEARA"),
+    )
+
+    occurrence = session.execute(select(ClientOccurrence).where(ClientOccurrence.cpf == "55544433322")).scalar_one()
+    assert occurrence.vl_margem is None
+    assert occurrence.vl_rmc is None
+
+    rows = query_clients(session, FilterSet(base_segment="GOVERNO", cpf="55544433322"))
+    assert len(rows) == 1
+    assert rows[0]["vl_margem"] is None
+    assert rows[0]["vl_rmc"] is None
+    assert rows[0]["margem_liquida"] == Decimal("300.00")
+    assert rows[0]["margem_bruta"] == Decimal("500.00")
+    assert rows[0]["margem_utilizada"] == Decimal("200.00")
+
+
+def test_query_clients_government_quick_search_accepts_matricula(tmp_path: Path) -> None:
+    gov_csv = tmp_path / "gov_matricula.csv"
+    gov_csv.write_text(
+        "CPF;NOME HIGIENIZADO;MATRICULA;UF;CIDADE;Celular Atual;NASC\n"
+        "77766655544;CLIENTE GOV;MAT12345;MA;SAO LUIS;98991112222;01/02/1980\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[gov_csv], base_segment="GOVERNO", base_source="MARANHAO"),
+    )
+
+    rows = query_clients(session, FilterSet(base_segment="GOVERNO", quick_mode="cpf", quick_value="12345"))
+    assert len(rows) == 1
+    assert rows[0]["cpf"] == "77766655544"
+
+
+def test_query_clients_accepts_short_original_cpf_search(tmp_path: Path) -> None:
+    gov_csv = tmp_path / "gov_short_cpf.csv"
+    gov_csv.write_text(
+        "CPF;NOME;UF;CIDADE;TELEFONE_01;NASC\n"
+        "6034578;DIANA GLEISS OLIVEIRA GUIMARAES;BA;LENCOIS;75988358243;1980-05-19 00:00:00\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[gov_csv], base_segment="GOVERNO", base_source="BAHIA"),
+    )
+
+    rows = query_clients(session, FilterSet(base_segment="GOVERNO", quick_mode="cpf", quick_value="6034578"))
+    assert len(rows) == 1
+    assert rows[0]["cpf"] == "00006034578"
+
+
+def test_query_clients_public_exposes_personal_and_functional_fields(tmp_path: Path) -> None:
+    gov_csv = tmp_path / "gov_fields.csv"
+    gov_csv.write_text(
+        "CPF;NOME;SEXO;NASC;NOME DA MAE;EMAIL;ENDERECO;NRO;BAIRRO;CIDADE;UF;PIS;ENTIDADE;MATRICULA;REGIME DE CONTRATACAO;CARGO;DATA ADMISSAO;SITUACAO;MARGEM\n"
+        "12345678900;MARIA TESTE;F;1980-05-19 00:00:00;JOANA TESTE;maria@exemplo.com;RUA A;45;CENTRO;SALVADOR;BA;12345678901;PREFEITURA;MAT-01;EFETIVO;ANALISTA;2020-01-10 00:00:00;ATIVO;300,00\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[gov_csv], base_segment="GOVERNO", base_source="BAHIA"),
+    )
+
+    rows = query_clients(session, FilterSet(base_segment="GOVERNO", cpf="12345678900"))
+    assert len(rows) == 1
+    assert rows[0]["sexo"] == "F"
+    assert rows[0]["nome_mae"] == "JOANA TESTE"
+    assert rows[0]["email"] == "maria@exemplo.com"
+    assert rows[0]["endereco"] == "RUA A, 45, CENTRO"
+    assert rows[0]["tipo_vinculo"] == "EFETIVO"
+    assert rows[0]["cargo_funcao"] == "ANALISTA"
+    assert rows[0]["data_admissao"] == "10/01/2020"
+
+
+def test_query_clients_public_fills_all_missing_fields_from_same_cpf_group(tmp_path: Path) -> None:
+    cadastro_csv = tmp_path / "gov_cadastro_full.csv"
+    cadastro_csv.write_text(
+        "CPF;NOME;SEXO;NASC;NOME DA MAE;EMAIL;ENDERECO;NRO;COMPLEMENTO;BAIRRO;CIDADE;UF;CEP;TELEFONE_01\n"
+        "12345678900;MARIA TESTE;F;1980-05-19 00:00:00;JOANA TESTE;maria@exemplo.com;RUA A;45;AP 2;CENTRO;SALVADOR;BA;40000000;71999990000\n",
+        encoding="utf-8",
+    )
+    operacional_csv = tmp_path / "gov_operacional_full.csv"
+    operacional_csv.write_text(
+        "CPF;ENTIDADE;MATRICULA;REGIME DE CONTRATACAO;CARGO;DATA ADMISSAO;SITUACAO;CONVENIO;SECRETARIA;MARGEM\n"
+        "12345678900;PREFEITURA;MAT-01;EFETIVO;ANALISTA;2020-01-10 00:00:00;ATIVO;BANCO X;SAUDE;300,00\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[cadastro_csv], base_segment="GOVERNO", base_source="BAHIA"),
+    )
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[operacional_csv], base_segment="GOVERNO", base_source="BAHIA_ATUALIZADA"),
+    )
+
+    rows = query_clients(session, FilterSet(base_segment="GOVERNO", cpf="12345678900"))
+    assert len(rows) == 1
+    assert rows[0]["telefone"] == "71999990000"
+    assert rows[0]["email"] == "maria@exemplo.com"
+    assert rows[0]["nome_mae"] == "JOANA TESTE"
+    assert rows[0]["endereco"] == "RUA A, 45, AP 2, CENTRO"
+    assert rows[0]["cep"] == "40000000"
+    assert rows[0]["matricula"] == "MAT-01"
+    assert rows[0]["entidade"] == "PREFEITURA"
+    assert rows[0]["tipo_vinculo"] == "EFETIVO"
+    assert rows[0]["cargo_funcao"] == "ANALISTA"
+    assert rows[0]["data_admissao"] == "10/01/2020"
+    assert rows[0]["convenio"] == "BANCO X"
+    assert rows[0]["secretaria"] == "SAUDE"
+
+
+def test_query_clients_gov_sp_titles_are_mapped(tmp_path: Path) -> None:
+    gov_csv = tmp_path / "gov_sp.csv"
+    gov_csv.write_text(
+        "CPF;NOME;SEXO;NASC;IDADE;CNPJ;RAZAO_SOCIAL;GRUPO;CARGO;ORGÃO;REMUNERAÇÃO DO MÊS;ENDERECO;BAIRRO;CIDADE;CEP;UF;TELEFONE_01;TELEFONE_02\n"
+        "12345678900;MARIA TESTE;F;1980-05-19 00:00:00;40;12345678000199;ORG TESTE;EFETIVO;ANALISTA;SECRETARIA ESTADUAL;2500,00;RUA A;CENTRO;SAO PAULO;01000000;SP;11999990000;1133334444\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[gov_csv], base_segment="GOVERNO", base_source="SP"),
+    )
+
+    rows = query_clients(session, FilterSet(base_segment="GOVERNO", cpf="12345678900"))
+    assert len(rows) == 1
+    assert rows[0]["entidade"] == "SECRETARIA ESTADUAL"
+    assert rows[0]["tipo_vinculo"] == "EFETIVO"
+    assert rows[0]["cargo_funcao"] == "ANALISTA"
+    assert rows[0]["salario"] == Decimal("2500.00")
+    assert rows[0]["telefone"] == "11999990000"
+
+
+def test_query_clients_nova_vida_fields_are_mapped(tmp_path: Path) -> None:
+    nova_vida_csv = tmp_path / "nova_vida.csv"
+    nova_vida_csv.write_text(
+        "CPF;NOME;NOME_MAE;SEXO;NASC;RENDA;TIPO;TITULO;LOGRADOURO;NUMERO;COMPLEMENTO;BAIRRO;CIDADE;UF;CEP;AREARISCO;CEL1;FLGWHATSCEL1;PROCONCEL1;CEL2;FLGWHATSCEL2;EMAIL1;EMAIL2;EMAIL3\n"
+        "12345678900;MARIA TESTE;JOANA TESTE;F;1980-05-19 00:00:00;3200,50;EFETIVO;ANALISTA ADMINISTRATIVO;RUA A;45;AP 2;CENTRO;SALVADOR;BA;40000000;NAO;71999990000;SIM;NAO;71988887777;NAO;maria1@exemplo.com;maria2@exemplo.com;maria3@exemplo.com\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[nova_vida_csv], base_segment="GOVERNO", base_source="NOVA VIDA"),
+    )
+
+    rows = query_clients(session, FilterSet(base_segment="GOVERNO", cpf="12345678900"))
+    assert len(rows) == 1
+    assert rows[0]["nome_mae"] == "JOANA TESTE"
+    assert rows[0]["salario"] == Decimal("3200.50")
+    assert rows[0]["tipo_vinculo"] == "EFETIVO"
+    assert rows[0]["cargo_funcao"] == "ANALISTA ADMINISTRATIVO"
+    assert rows[0]["telefone"] == "71999990000"
+    assert rows[0]["telefone2"] == "71988887777"
+    assert rows[0]["whatsapp_telefone1"] == "SIM"
+    assert rows[0]["whatsapp_telefone2"] == "NAO"
+    assert rows[0]["email"] == "maria1@exemplo.com"
+    assert rows[0]["email2"] == "maria2@exemplo.com"
+    assert rows[0]["email3"] == "maria3@exemplo.com"
+
+
+def test_import_files_prefeitura_simple_service_sheet_keeps_financial_fields(tmp_path: Path) -> None:
+    csv_path = tmp_path / "prefeitura_servico_simples.csv"
+    csv_path.write_text(
+        "cpf;matric;servico;name;situacao;entidade;cbo_titulo;margem;margem total\n"
+        "01222536714;00003455;Prefeitura;CLAUDIA;Ativo - AT 0002 - SEC ESTATUTA;PREFEITURA;DUQUE CAXIAS;677,99;677,99\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[csv_path], base_segment="PREFEITURA", base_source="OPERACIONAL"),
+    )
+
+    rows = query_clients(session, FilterSet(base_segment="PREFEITURA", cpf="01222536714"))
+    assert len(rows) == 1
+    assert rows[0]["matricula"] == "00003455"
+    assert rows[0]["servico"] == "PREFEITURA"
+    assert rows[0]["situacao"] == "ATIVO - AT 0002 - SEC ESTATUTA"
+    assert rows[0]["cbo_titulo"] == "DUQUE CAXIAS"
+    assert rows[0]["vl_margem"] == Decimal("677.99")
+    assert rows[0]["margem_total"] == Decimal("677.99")
+
+
+def test_import_files_government_multiple_services_same_matricula_creates_multiple_rows(tmp_path: Path) -> None:
+    csv_path = tmp_path / "gov_multiservico.csv"
+    csv_path.write_text(
+        "CPF;Servidor;Matrícula;Serviço;margem;Margem Total (R$)\n"
+        "23820977520;LUCIANO SILVA RIOS;7171000000000000;BENEFÍCIO - CREDESTA - COMPRA;7,95;603\n"
+        "23820977520;LUCIANO SILVA RIOS;7171000000000000;BENEFÍCIO - CREDCESTA SAQUE;496,45;603\n"
+        "23820977520;LUCIANO SILVA RIOS;7171000000000000;EMPRÉSTIMO - 1;36,18;1326,59\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[csv_path], base_segment="GOVERNO", base_source="CEARA"),
+    )
+
+    rows = query_clients(session, FilterSet(base_segment="GOVERNO", cpf="23820977520"))
+    assert len(rows) == 3
+    assert {row["servico"] for row in rows} == {
+        "BENEFÍCIO - CREDESTA - COMPRA",
+        "BENEFÍCIO - CREDCESTA SAQUE",
+        "EMPRÉSTIMO - 1",
+    }
+    assert {row["margem_total"] for row in rows} == {Decimal("603.00"), Decimal("1326.59")}
+    assert {row["vl_margem"] for row in rows} == {Decimal("7.95"), Decimal("496.45"), Decimal("36.18")}
+
+    client = session.get(Client, "23820977520")
+    assert client is not None
+    assert client.tem_governo is True
+    assert client.qtd_ocorrencias == 3
+
+
+def test_query_clients_public_consolidates_operational_row_with_cadastral_data(tmp_path: Path) -> None:
+    cadastro_csv = tmp_path / "pref_cadastro.csv"
+    cadastro_csv.write_text(
+        "CPF;NOME HIGIENIZADO;NASC;TELEFONE_01;UF;CIDADE\n"
+        "00641012748;MARIA HELENA RIBEIRO;01/02/1980;21999887766;RJ;DUQUE DE CAXIAS\n",
+        encoding="utf-8",
+    )
+    operacional_csv = tmp_path / "pref_operacional.csv"
+    operacional_csv.write_text(
+        "CPF;MATRICULA;SERVICO;SITUACAO;ENTIDADE;CBO_TITULO;MARGEM;MARGEM TOTAL\n"
+        "00641012748;00000223781;PREFEITURA DUQUE CAXIAS;ATIVO - ATIVO;0035 - SEC MUN SAUDE SMS;ESTATUTARIO CTRIENIO AUTOMATICO;229,93;229,93\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[cadastro_csv], base_segment="PREFEITURA", base_source="DUQUE DE CAXIAS"),
+    )
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[operacional_csv], base_segment="PREFEITURA", base_source="DUQUE DE CAXIAS - ATUALIZACAO"),
+    )
+
+    rows = query_clients(session, FilterSet(base_segment="PREFEITURA", cpf="00641012748"))
+    assert len(rows) == 1
+    assert rows[0]["matricula"] == "00000223781"
+    assert rows[0]["servico"] == "PREFEITURA DUQUE CAXIAS"
+    assert rows[0]["telefone"] == "21999887766"
+    assert rows[0]["dt_nasc"] == "01/02/1980"
+    assert rows[0]["idade"] == compute_age_from_birth("01/02/1980")

@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
+{% if message %}<p class="success">{{ message }}</p>{% endif %}
 <form method="post" enctype="multipart/form-data" class="list-builder">
     <section class="card builder-main">
         <div class="section-head">
             <div>
                 <h2>Importar campanha</h2>
-                <p>Monte a importacao por etapas e, se quiser, traga apenas as especies desejadas.</p>
+                <p>Monte a importacao por etapas. O formulario se adapta ao segmento selecionado.</p>
             </div>
         </div>
         {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -20,12 +21,22 @@
                     </div>
                 </div>
                 <div class="form-grid compact-grid">
-                    <label>Ano<input type="number" name="year" min="2020" max="2100" value="2025" required></label>
-                    <label>Mes<input type="number" name="month" min="1" max="12" value="8" required></label>
+                    <label class="inss-only-field">Ano<input type="number" name="year" min="2020" max="2100" value="2025" required></label>
+                    <label class="inss-only-field">Mes<input type="number" name="month" min="1" max="12" value="8" required></label>
+                    <label>Segmento
+                        <select name="base_segment" id="base_segment_select">
+                            {% for value, label in base_segment_options %}
+                            <option value="{{ value }}" {% if selected_base_segment == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label>Fonte/Layout
+                        <input type="text" name="base_source" placeholder="Ex.: BAHIA, CEARA, JUAZEIRO, CAMACARI">
+                    </label>
                     <label>Usuario<input type="text" name="user_name" value="operador"></label>
                     <label>Origem logica<input type="text" name="origin_folder" value="upload_web"></label>
                 </div>
-                <p class="muted">A semana do lote sera calculada automaticamente pelo DDB dos registros.</p>
+                <p class="muted" id="reference_help">INSS usa referencia por competencia. Governo e Prefeitura usam layout/fonte da base e nao dependem de ano e mes para a importacao.</p>
             </section>
 
             <section class="filter-block">
@@ -42,12 +53,12 @@
                 </div>
             </section>
 
-            <section class="filter-block">
+            <section class="filter-block inss-only-section" id="species_section">
                 <div class="filter-block-head">
                     <span class="filter-step">3</span>
                     <div>
                         <h3>Especies desejadas</h3>
-                        <p>Se marcar especies, o sistema importa somente essas. Se deixar vazio, importa tudo.</p>
+                        <p>Esse filtro vale para importacoes INSS. Para Governo e Prefeitura, a entrada usa o layout da base e ignora especies.</p>
                     </div>
                 </div>
                 <div class="species-picker">
@@ -64,6 +75,7 @@
                     <label>Outras especies<input type="text" name="custom_species" placeholder="Ex.: 41, 42, 46"></label>
                 </div>
             </section>
+
         </div>
     </section>
 
@@ -82,6 +94,32 @@
     </aside>
 </form>
 
+<form method="post" action="/import/public-update-import" enctype="multipart/form-data" class="card public-update-section" id="public_update_section">
+    <div class="section-head">
+        <div>
+            <h2>Atualizacao complementar GOV/PREF</h2>
+            <p>Suba a planilha de matricula, margem e contratos antes de gerar campanha para Governo ou Prefeitura.</p>
+        </div>
+    </div>
+    <input type="hidden" name="base_segment" id="public_update_segment" value="{{ selected_base_segment or 'INSS' }}">
+    <div class="form-grid compact-grid">
+        <label>Fonte da base
+            <select name="source_name">
+                <option value="">Selecionar fonte</option>
+                {% for source in available_public_sources %}
+                <option value="{{ source }}">{{ source }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label class="full">Planilha complementar
+            <input type="file" name="files" accept=".csv,.xlsx,.xlsm,.xls" multiple>
+        </label>
+    </div>
+    <div class="consult-filter-actions top-gap">
+        <button type="submit">Importar atualizacao GOV/PREF</button>
+    </div>
+</form>
+
 {% if summary %}
 <section class="card">
     <h2>Resumo da importacao</h2>
@@ -91,6 +129,11 @@
         <li>Arquivos ignorados: {{ summary.files_skipped }}</li>
         <li>Linhas importadas: {{ summary.rows_imported }}</li>
         <li>Linhas invalidas: {{ summary.invalid_rows }}</li>
+        <li>Linhas duplicadas: {{ summary.duplicate_rows }}</li>
+        <li>CPFs novos: {{ summary.cpfs_new }}</li>
+        <li>CPFs atualizados: {{ summary.cpfs_updated }}</li>
+        <li>Sem telefone: {{ summary.rows_without_phone }}</li>
+        <li>Sem cidade: {{ summary.rows_without_city }}</li>
         <li>Linhas fora das especies escolhidas: {{ summary.species_filtered_rows }}</li>
     </ul>
     {% if last_batch_id %}
@@ -99,6 +142,57 @@
     {% if summary.duplicate_files %}
     <p>Arquivos duplicados: {{ summary.duplicate_files | join(", ") }}</p>
     {% endif %}
+    {% if summary.invalid_files %}
+    <p>Arquivos com validacao rejeitada: {{ summary.invalid_files | join(", ") }}</p>
+    {% endif %}
+    {% if summary.validation_errors %}
+    <div class="error">
+        <strong>Erros de validacao</strong>
+        <ul class="plain-list">
+            {% for item in summary.validation_errors %}
+            <li>{{ item }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
 </section>
 {% endif %}
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const segmentSelect = document.getElementById("base_segment_select");
+    const inssFields = document.querySelectorAll(".inss-only-field");
+    const inssSections = document.querySelectorAll(".inss-only-section");
+    const publicUpdateSection = document.getElementById("public_update_section");
+    const publicUpdateSegment = document.getElementById("public_update_segment");
+    const yearInput = document.querySelector("input[name='year']");
+    const monthInput = document.querySelector("input[name='month']");
+
+    function applySegmentVisibility() {
+        const isInss = (segmentSelect && segmentSelect.value === "INSS");
+        inssFields.forEach(function (field) {
+            field.style.display = isInss ? "" : "none";
+        });
+        inssSections.forEach(function (section) {
+            section.style.display = isInss ? "" : "none";
+        });
+        if (publicUpdateSection) {
+            publicUpdateSection.style.display = isInss ? "none" : "";
+        }
+        if (publicUpdateSegment && segmentSelect) {
+            publicUpdateSegment.value = segmentSelect.value;
+        }
+        if (yearInput) {
+            yearInput.required = isInss;
+        }
+        if (monthInput) {
+            monthInput.required = isInss;
+        }
+    }
+
+    if (segmentSelect) {
+        segmentSelect.addEventListener("change", applySegmentVisibility);
+    }
+    applySegmentVisibility();
+});
+</script>
 {% endblock %}

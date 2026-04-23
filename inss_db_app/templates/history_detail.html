@@ -14,8 +14,27 @@
     </div>
 </section>
 
+<section class="dashboard-grid four-columns compact-stats">
+    <div class="card stat-box">
+        <span>Segmento</span>
+        <strong>{{ batch.base_segment or "INSS" }}</strong>
+    </div>
+    <div class="card stat-box">
+        <span>Fonte/Layout</span>
+        <strong>{{ batch.base_source or "Nao informado" }}</strong>
+    </div>
+    <div class="card stat-box">
+        <span>Contatos afetados</span>
+        <strong>{{ unique_contacts }}</strong>
+    </div>
+    <div class="card stat-box">
+        <span>Com telefone</span>
+        <strong>{{ contacts_with_phone }}</strong>
+    </div>
+</section>
+
 {% if batch.status == "PROCESSANDO" %}
-<section class="card">
+<section class="card feedback-card feedback-card--info">
     <h2>Importacao em andamento</h2>
     <p class="muted">Essa tela atualiza sozinha a cada 5 segundos.</p>
 </section>
@@ -42,6 +61,13 @@
                     <strong>Data da importacao</strong>
                     <p>{{ batch.data_importacao }}</p>
                 </div>
+            </div>
+            <div class="stack-item">
+                <div>
+                    <strong>Aproveitamento</strong>
+                    <p>Percentual de linhas importadas em relacao ao total lido.</p>
+                </div>
+                <span class="count-pill">{{ updated_ratio }}%</span>
             </div>
             <div class="stack-item">
                 <div>
@@ -76,11 +102,25 @@
                 </div>
                 <span class="count-pill">{{ skipped_rows }}</span>
             </div>
+            <div class="stack-item">
+                <div>
+                    <strong>Contatos atualizados</strong>
+                    <p>CPFs unicos afetados pelo lote.</p>
+                </div>
+                <span class="count-pill">{{ unique_contacts }}</span>
+            </div>
+            <div class="stack-item">
+                <div>
+                    <strong>Contatos com telefone</strong>
+                    <p>CPFs do lote que ficaram com ao menos um telefone.</p>
+                </div>
+                <span class="count-pill">{{ contacts_with_phone }}</span>
+            </div>
         </div>
     </div>
 </section>
 
-<section class="card">
+<section class="card history-detail-files">
     <div class="section-head">
         <div>
             <h2>Arquivos da campanha</h2>
@@ -88,6 +128,7 @@
         </div>
         <a href="/history" class="inline-link">Voltar ao historico</a>
     </div>
+    <div class="table-scroll-shell">
     <table>
         <thead>
             <tr><th>Arquivo</th><th>Semana</th><th>Tipo</th><th>Linhas lidas</th><th>Linhas importadas</th><th>Descartadas</th></tr>
@@ -107,5 +148,6 @@
         {% endfor %}
         </tbody>
     </table>
+    </div>
 </section>
 {% endblock %}

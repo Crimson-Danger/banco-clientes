@@ -1,0 +1,287 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="client-view-shell">
+    <article class="card client-view-hero">
+        <div class="client-view-hero-main">
+            <div class="client-view-heading">
+                <span class="client-view-kicker">Ficha do cliente</span>
+                <div class="client-view-title-row">
+                    <div>
+                        <h2>{{ client.nome_atual or "Sem nome" }}</h2>
+                        <p>CPF {{ client.cpf }} · {{ client.cidade_atual or "Cidade nao informada" }} / {{ client.uf_atual or "--" }}</p>
+                    </div>
+                    <div class="client-view-actions">
+                        <a href="/clients" class="top-action ghost">Voltar</a>
+                        <a href="/exports" class="top-action">Gerar lista</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="client-view-highlight-grid">
+                <div class="client-view-highlight-card">
+                    <span>Telefone principal</span>
+                    <strong>{{ client.melhor_telefone | phone_br if client.melhor_telefone else "-" }}</strong>
+                    <small>Melhor contato consolidado</small>
+                </div>
+                <div class="client-view-highlight-card">
+                    <span>Ocorrencias</span>
+                    <strong>{{ client.qtd_ocorrencias }}</strong>
+                    <small>Total de registros encontrados</small>
+                </div>
+                <div class="client-view-highlight-card">
+                    <span>Ultima referencia</span>
+                    <strong>{{ client.ultima_referencia or "-" }}</strong>
+                    <small>Competencia mais recente</small>
+                </div>
+                <div class="client-view-highlight-card">
+                    <span>Maior margem</span>
+                    <strong>{{ client.maior_margem | brl }}</strong>
+                    <small>Pico consolidado do CPF</small>
+                </div>
+            </div>
+        </div>
+    </article>
+</section>
+
+<section class="client-view-grid">
+    <article class="card client-view-panel">
+        <div class="client-view-panel-head">
+            <div>
+                <span class="client-view-section-kicker">Cadastro</span>
+                <h3>Resumo consolidado</h3>
+            </div>
+            <span class="client-view-badge">Visao 360</span>
+        </div>
+        <div class="client-view-info-list">
+            <div class="client-view-info-item">
+                <span>Nome atual</span>
+                <strong>{{ client.nome_atual or "-" }}</strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>Telefone principal</span>
+                <strong>{{ latest_occurrence.telefone1 | phone_br if latest_occurrence and latest_occurrence.telefone1 else client.melhor_telefone | phone_br if client.melhor_telefone else "-" }}</strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>Telefone 2</span>
+                <strong>{{ latest_occurrence.telefone2 | phone_br if latest_occurrence and latest_occurrence.telefone2 else "-" }}</strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>Telefone 3</span>
+                <strong>{{ latest_occurrence.telefone3 | phone_br if latest_occurrence and latest_occurrence.telefone3 else "-" }}</strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>E-mail</span>
+                <strong>{{ latest_occurrence.email if latest_occurrence and latest_occurrence.email else "-" }}</strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>Cidade atual</span>
+                <strong>{{ client.cidade_atual or "-" }}</strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>UF atual</span>
+                <strong>{{ client.uf_atual or "-" }}</strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>Endereco</span>
+                <strong>
+                    {% if latest_occurrence %}
+                        {{ latest_occurrence.logradouro or "-" }}{% if latest_occurrence.numero %}, {{ latest_occurrence.numero }}{% endif %}{% if latest_occurrence.complemento %} - {{ latest_occurrence.complemento }}{% endif %}{% if latest_occurrence.bairro %} / {{ latest_occurrence.bairro }}{% endif %}{% if latest_occurrence.cep %} · CEP {{ latest_occurrence.cep }}{% endif %}
+                    {% else %}
+                        -
+                    {% endif %}
+                </strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>PIS atual</span>
+                <strong>{{ client.pis_atual or "-" }}</strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>Matricula atual</span>
+                <strong>{{ client.matricula_atual or "-" }}</strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>Entidade atual</span>
+                <strong>{{ client.entidade_atual or "-" }}</strong>
+            </div>
+            <div class="client-view-info-item">
+                <span>Atualizado em</span>
+                <strong>{{ client.atualizado_em.strftime("%d/%m/%Y %H:%M") if client.atualizado_em else "-" }}</strong>
+            </div>
+        </div>
+    </article>
+</section>
+
+<section class="client-view-segment-grid">
+    {% for segment in segment_details %}
+    <article class="card client-view-panel client-view-segment-panel">
+        <div class="client-view-panel-head">
+            <div>
+                <span class="client-view-section-kicker">Segmento</span>
+                <h3>{{ segment.label }}</h3>
+            </div>
+            <span class="client-view-segment segment-{{ segment.segment|lower }}">{{ segment.segment }}</span>
+        </div>
+        <div class="client-view-segment-sections">
+            <div class="client-view-subpanel">
+                <h4>Contato e endereco</h4>
+                <div class="client-view-info-list">
+                    <div class="client-view-info-item">
+                        <span>Telefone principal</span>
+                        <strong>{{ segment.phone_1 | phone_br if segment.phone_1 else "-" }}</strong>
+                    </div>
+                    <div class="client-view-info-item">
+                        <span>Telefone 2</span>
+                        <strong>{{ segment.phone_2 | phone_br if segment.phone_2 else "-" }}</strong>
+                    </div>
+                    <div class="client-view-info-item">
+                        <span>Telefone 3</span>
+                        <strong>{{ segment.phone_3 | phone_br if segment.phone_3 else "-" }}</strong>
+                    </div>
+                    <div class="client-view-info-item">
+                        <span>E-mail</span>
+                        <strong>{{ segment.email or "-" }}</strong>
+                    </div>
+                    <div class="client-view-info-item">
+                        <span>Endereco</span>
+                        <strong>{{ segment.address or "-" }}</strong>
+                    </div>
+                    <div class="client-view-info-item">
+                        <span>Cidade / UF</span>
+                        <strong>{{ segment.city or "-" }} / {{ segment.uf or "-" }}</strong>
+                    </div>
+                    <div class="client-view-info-item">
+                        <span>Bairro</span>
+                        <strong>{{ segment.bairro or "-" }}</strong>
+                    </div>
+                    <div class="client-view-info-item">
+                        <span>CEP</span>
+                        <strong>{{ segment.cep or "-" }}</strong>
+                    </div>
+                </div>
+            </div>
+
+            <div class="client-view-subpanel">
+                <h4>{% if segment.segment == "INSS" %}Dados do beneficio{% else %}Dados funcionais{% endif %}</h4>
+                <div class="client-view-info-list">
+                {% if segment.segment == "INSS" %}
+                <div class="client-view-info-item">
+                    <span>Beneficio</span>
+                    <strong>{{ segment.benefit or "-" }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Especie</span>
+                    <strong>{{ segment.species or "-" }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>RMI</span>
+                    <strong>{{ segment.rmi | brl }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Margem disponivel</span>
+                    <strong>{{ segment.margin | brl }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Margem RMC</span>
+                    <strong>{{ segment.rmc | brl }}</strong>
+                </div>
+                {% else %}
+                <div class="client-view-info-item">
+                    <span>Matricula</span>
+                    <strong>{{ segment.matricula or "-" }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Entidade</span>
+                    <strong>{{ segment.entity or "-" }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Servico</span>
+                    <strong>{{ segment.service or "-" }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Situacao</span>
+                    <strong>{{ segment.status or "-" }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Salario</span>
+                    <strong>{{ segment.salary | brl }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Margem disponivel</span>
+                    <strong>{{ segment.margin | brl }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Margem total</span>
+                    <strong>{{ segment.margem_total | brl }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Margem liquida</span>
+                    <strong>{{ segment.margem_liquida | brl }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Margem bruta</span>
+                    <strong>{{ segment.margem_bruta | brl }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Margem utilizada</span>
+                    <strong>{{ segment.margem_utilizada | brl }}</strong>
+                </div>
+                {% endif %}
+                <div class="client-view-info-item">
+                    <span>Fonte</span>
+                    <strong>{{ segment.source or "-" }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Referencia</span>
+                    <strong>{{ segment.reference }}</strong>
+                </div>
+                <div class="client-view-info-item">
+                    <span>Arquivo origem</span>
+                    <strong>{{ segment.file_name }}</strong>
+                </div>
+                </div>
+            </div>
+        </div>
+    </article>
+    {% endfor %}
+</section>
+
+<section class="card client-view-history-panel">
+    <div class="client-view-panel-head">
+        <div>
+            <span class="client-view-section-kicker">Historico</span>
+            <h3>Timeline do CPF</h3>
+            <p class="muted">Ocorrencias mais recentes encontradas nas bases importadas.</p>
+        </div>
+        <span class="client-view-badge">{{ occurrences | length }}</span>
+    </div>
+    <div class="client-view-history-table">
+        <table>
+            <thead>
+                <tr><th>Quando</th><th>Segmento</th><th>Fonte</th><th>Arquivo</th><th>Contato</th><th>Matricula/Beneficio</th><th>Margem</th><th>Localidade</th></tr>
+            </thead>
+            <tbody>
+            {% for occurrence, file_name, batch_id, ano_referencia, mes_referencia in occurrences %}
+                <tr>
+                    <td>
+                        <strong>{{ occurrence.criado_em.strftime("%d/%m/%Y") if occurrence.criado_em else "-" }}</strong>
+                        <small>{{ occurrence.criado_em.strftime("%H:%M") if occurrence.criado_em else "-" }}</small>
+                    </td>
+                    <td><span class="client-view-segment segment-{{ occurrence.base_segment|lower }}">{{ occurrence.base_segment }}</span></td>
+                    <td>{{ occurrence.base_source or "-" }}</td>
+                    <td>
+                        <strong>{{ file_name }}</strong>
+                        <small>{{ "%02d"|format(mes_referencia) }}/{{ ano_referencia }}</small>
+                    </td>
+                    <td>{{ occurrence.telefone1 | phone_br if occurrence.telefone1 else "-" }}</td>
+                    <td>{{ occurrence.matricula or occurrence.nu_nb or "-" }}</td>
+                    <td>{{ occurrence.vl_margem | brl }}</td>
+                    <td>{{ occurrence.cidade or "-" }}{% if occurrence.uf %} / {{ occurrence.uf }}{% endif %}</td>
+                </tr>
+            {% else %}
+                <tr><td colspan="8">Nenhuma ocorrencia encontrada para este CPF.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

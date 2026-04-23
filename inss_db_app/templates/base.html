@@ -3,39 +3,67 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title if title else "Banco de Clientes INSS" }}</title>
+    <title>{{ title if title else "Banco de Clientes" }}</title>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+    {% if current_user %}
     <div class="app-shell">
         <aside class="sidebar">
             <div class="brand">
                 <span class="brand-mark">IN</span>
                 <div>
                     <strong>Banco de Clientes</strong>
-                    <small>INSS</small>
+                    <small>INSS, Governo e Prefeitura</small>
                 </div>
             </div>
             <nav class="sidebar-nav">
-                <a href="/" class="nav-link">Inicio</a>
-                <a href="/import" class="nav-link">Importacao</a>
-                <a href="/clients" class="nav-link">Segmentacao</a>
-                <a href="/exports" class="nav-link">Listas</a>
-                <a href="/history" class="nav-link">Historico</a>
+                {% if permissions.can_view_dashboard %}
+                <a href="/" class="nav-link"><span class="nav-icon">HM</span><span>Inicio</span></a>
+                {% endif %}
+                {% if permissions.can_import %}
+                <a href="/import" class="nav-link"><span class="nav-icon">IM</span><span>Importacao</span></a>
+                {% endif %}
+                {% if permissions.can_search %}
+                <a href="/clients" class="nav-link"><span class="nav-icon">SG</span><span>Segmentacao</span></a>
+                {% endif %}
+                {% if permissions.can_export %}
+                <a href="/exports" class="nav-link"><span class="nav-icon">EX</span><span>Listas</span></a>
+                {% endif %}
+                {% if permissions.can_view_history %}
+                <a href="/history" class="nav-link"><span class="nav-icon">HS</span><span>Historico</span></a>
+                {% endif %}
+                {% if permissions.can_manage_users %}
+                <a href="/users" class="nav-link"><span class="nav-icon">US</span><span>Usuarios</span></a>
+                {% endif %}
             </nav>
         </aside>
         <div class="main-shell">
             <header class="topbar">
                 <div>
-                    <h1>Painel de campanhas INSS</h1>
-                    <p>Importacao, consulta e geracao de listas em uma base central.</p>
+                    <h1>Painel de campanhas</h1>
+                    <p>Importacao, consulta e geracao de listas por dominio de base.</p>
                 </div>
-                <a href="/exports" class="top-action">Gerar lista de contatos</a>
+                <div class="topbar-actions">
+                    {% if permissions.can_export %}
+                    <a href="/exports" class="top-action">Gerar lista de contatos</a>
+                    {% endif %}
+                    <div class="user-chip">
+                        <strong>{{ current_user.full_name or current_user.username }}</strong>
+                        <small>@{{ current_user.username }}</small>
+                    </div>
+                    <a href="/logout" class="top-action ghost">Sair</a>
+                </div>
             </header>
             <main class="page">
                 {% block content %}{% endblock %}
             </main>
         </div>
     </div>
+    {% else %}
+    <main class="page auth-page">
+        {% block auth_content %}{% endblock %}
+    </main>
+    {% endif %}
 </body>
 </html>

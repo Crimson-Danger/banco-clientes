@@ -1,33 +1,88 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-    <h2>Historico de lotes</h2>
+<section class="card history-hero-card">
+    <div class="history-hero-head">
+        <div>
+            <span class="page-kicker">Historico operacional</span>
+            <h2>Campanhas e importacoes recentes</h2>
+            <p class="muted">Acompanhe os lotes em uma leitura mais direta, com foco em status, contexto e acao.</p>
+        </div>
+        <div class="history-hero-metrics">
+            <div class="history-hero-metric">
+                <span>Total desta pagina</span>
+                <strong>{{ batches|length }}</strong>
+            </div>
+            <div class="history-hero-metric">
+                <span>Pagina atual</span>
+                <strong>{{ pagination.page }}</strong>
+            </div>
+        </div>
+    </div>
     {% if message %}
     <p class="success">{{ message }}</p>
     {% endif %}
-    <table>
-        <thead><tr><th>ID</th><th>Referencia</th><th>Origem</th><th>Status</th><th>Arquivos</th><th>Data</th><th>Resumo</th><th>Monitor</th><th>Acao</th></tr></thead>
-        <tbody>
-        {% for batch in batches %}
-            <tr>
-                <td>{{ batch.id }}</td>
-                <td>{{ "%02d" | format(batch.mes_referencia) }}/{{ batch.ano_referencia }}</td>
-                <td>{{ batch.origem_pasta }}</td>
-                <td>{{ batch.status }}</td>
-                <td>{{ file_counts[batch.id] }}</td>
-                <td>{{ batch.data_importacao }}</td>
-                <td>{{ batch.resumo }}</td>
-                <td><a href="/history/{{ batch.id }}" class="inline-link">Ver detalhes</a></td>
-                <td>
-                    <form method="post" action="/history/{{ batch.id }}/delete" onsubmit="return confirm('Apagar a campanha {{ batch.id }}?');">
-                        <button type="submit" class="danger-button">Apagar</button>
-                    </form>
-                </td>
-            </tr>
-        {% else %}
-            <tr><td colspan="9">Nenhum lote importado.</td></tr>
-        {% endfor %}
-        </tbody>
-    </table>
 </section>
+
+<section class="history-timeline">
+    {% for batch in batches %}
+    <article class="card history-entry">
+        <div class="history-entry-rail"></div>
+        <div class="history-entry-body">
+            <div class="history-entry-head">
+                <div>
+                    <span class="history-entry-kicker">Lote {{ batch.id }}</span>
+                    <h3>{{ "%02d" | format(batch.mes_referencia) }}/{{ batch.ano_referencia }}</h3>
+                    <p>{{ batch.origem_pasta }}</p>
+                </div>
+                <div class="history-entry-badges">
+                    <span class="status-pill history-status-pill">{{ batch.status }}</span>
+                    <span class="segment-chip segment-chip--{{ (batch.base_segment or 'INSS')|lower }}">{{ batch.base_segment or "INSS" }}</span>
+                </div>
+            </div>
+            <div class="history-entry-grid">
+                <div class="history-entry-metric">
+                    <span>Arquivos</span>
+                    <strong>{{ file_counts[batch.id] }}</strong>
+                </div>
+                <div class="history-entry-metric">
+                    <span>Importado em</span>
+                    <strong>{{ batch.data_importacao }}</strong>
+                </div>
+                <div class="history-entry-metric history-entry-metric--wide">
+                    <span>Resumo tecnico</span>
+                    <strong>{{ batch.resumo or "Sem resumo informado." }}</strong>
+                </div>
+            </div>
+            <div class="history-entry-actions">
+                <a href="/history/{{ batch.id }}" class="top-action">Ver detalhes</a>
+                <form method="post" action="/history/{{ batch.id }}/delete" onsubmit="return confirm('Apagar a campanha {{ batch.id }}?');">
+                    <button type="submit" class="danger-button">Apagar lote</button>
+                </form>
+            </div>
+        </div>
+    </article>
+    {% else %}
+    <article class="card empty-state-card">
+        <span class="empty-state-icon">HS</span>
+        <h3>Nenhum lote importado</h3>
+        <p class="muted">Quando novas campanhas forem processadas, o historico aparecera aqui em ordem de execucao.</p>
+    </article>
+    {% endfor %}
+</section>
+
+{% if pagination.total_pages > 1 %}
+<section class="card pagination-card">
+    <div class="pagination-bar">
+        <span>Pagina {{ pagination.page }} de {{ pagination.total_pages }}</span>
+        <div class="pagination-actions">
+            {% if pagination.has_prev %}
+            <a href="/history?page={{ pagination.prev_page }}" class="consult-action ghost inline">Anterior</a>
+            {% endif %}
+            {% if pagination.has_next %}
+            <a href="/history?page={{ pagination.next_page }}" class="consult-action inline">Proxima</a>
+            {% endif %}
+        </div>
+    </div>
+</section>
+{% endif %}
 {% endblock %}

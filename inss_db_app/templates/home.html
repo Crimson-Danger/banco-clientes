@@ -1,93 +1,281 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="dashboard-grid">
-    <div class="panel soft-panel">
-        <span class="eyebrow">Abrangencia</span>
-        <strong class="panel-title">Base historica consolidada</strong>
-        <p>Todos os lotes importados ficam organizados por mes, semana, arquivo e CPF.</p>
-        <div class="chip-row">
-            <span class="chip">Clientes unicos: {{ total_clients }}</span>
-            <span class="chip">Com telefone: {{ total_with_phone }}</span>
+<section class="dashboard-home">
+    <div class="dashboard-hero card">
+        <div class="dashboard-hero-main">
+            <span class="dashboard-kicker">Painel executivo</span>
+            <h2>Visao consolidada da operacao de campanhas INSS</h2>
+            <p>
+                A home agora prioriza o que importa para decisao rapida: tamanho da base, qualidade de contato,
+                distribuicao geografica e movimentacao recente de importacoes e exportacoes.
+            </p>
+            <div class="dashboard-summary-grid">
+                <div class="dashboard-summary-card">
+                    <span>Clientes unicos</span>
+                    <strong>{{ "{:,}".format(total_clients).replace(",", ".") }}</strong>
+                    <small>Base consolidada pronta para segmentacao</small>
+                </div>
+                <div class="dashboard-summary-card">
+                    <span>Cobertura telefonica</span>
+                    <strong>{{ "{:.1f}".format(phone_ratio).replace(".", ",") }}%</strong>
+                    <small>{{ "{:,}".format(total_with_phone).replace(",", ".") }} com telefone valido</small>
+                </div>
+                <div class="dashboard-summary-card">
+                    <span>Ultima importacao</span>
+                    <strong>{{ latest_batch_label }}</strong>
+                    <small>{{ completed_batches }} campanhas concluidas</small>
+                </div>
+            </div>
         </div>
-    </div>
-    <div class="stats-row">
-        <div class="card stat-box"><span>Campanhas</span><strong>{{ total_batches }}</strong></div>
-        <div class="card stat-box"><span>Arquivos</span><strong>{{ total_files }}</strong></div>
-        <div class="card stat-box"><span>Registros</span><strong>{{ total_occurrences }}</strong></div>
     </div>
 </section>
 
-<section class="dashboard-grid two-columns">
-    <div class="card chart-card">
-        <h2>Qualidade de contato</h2>
-        <div class="progress-stack">
-            <div class="progress-bar">
-                <span class="fill green" style="width: {{ phone_ratio }}%"></span>
+<section class="dashboard-kpi-grid">
+    <article class="card dashboard-kpi-card">
+        <span class="dashboard-card-kicker">Campanhas</span>
+        <strong>{{ total_batches }}</strong>
+        <small>{{ completed_batches }} concluidas</small>
+    </article>
+    <article class="card dashboard-kpi-card">
+        <span class="dashboard-card-kicker">Arquivos</span>
+        <strong>{{ total_files }}</strong>
+        <small>{{ "{:.1f}".format(file_per_campaign).replace(".", ",") }} por campanha</small>
+    </article>
+    <article class="card dashboard-kpi-card">
+        <span class="dashboard-card-kicker">Registros</span>
+        <strong>{{ "{:,}".format(total_occurrences).replace(",", ".") }}</strong>
+        <small>{{ "{:,}".format(avg_records_per_file).replace(",", ".") }} por arquivo</small>
+    </article>
+    <article class="card dashboard-kpi-card">
+        <span class="dashboard-card-kicker">Exportacoes</span>
+        <strong>{{ latest_exports | length }}</strong>
+        <small>Ultima em {{ latest_export_label }}</small>
+    </article>
+</section>
+
+<section class="dashboard-detail-grid">
+    <article class="dashboard-metric-card card">
+        <div class="dashboard-card-head">
+            <div>
+                <span class="dashboard-card-kicker">Segmentos</span>
+                <h2>Metricas por base</h2>
             </div>
-            <div class="legend-row">
+            <strong class="dashboard-side-value">{{ segment_stats | length }}</strong>
+        </div>
+        <div class="dashboard-segment-grid">
+            {% for item in segment_stats %}
+            <div class="dashboard-segment-card">
+                <span>{{ item.label }}</span>
+                <strong>{{ "{:,}".format(item.clients).replace(",", ".") }}</strong>
+                <small>{{ "{:,}".format(item.occurrences).replace(",", ".") }} ocorrencias, {{ "{:,}".format(item.with_phone).replace(",", ".") }} com telefone</small>
+            </div>
+            {% endfor %}
+        </div>
+    </article>
+
+    <article class="dashboard-metric-card card">
+        <div class="dashboard-card-head">
+            <div>
+                <span class="dashboard-card-kicker">Auditoria</span>
+                <h2>Ultimos eventos</h2>
+            </div>
+            <strong class="dashboard-side-value">{{ latest_audits | length }}</strong>
+        </div>
+        <div class="stack-list dashboard-stack-list">
+            {% for item in latest_audits %}
+            <div class="stack-item dashboard-stack-item">
+                <div class="dashboard-stack-main">
+                    <strong>{{ item.action }}</strong>
+                    <p>{{ item.actor_username }}{% if item.message %} - {{ item.message }}{% endif %}</p>
+                    <small>{{ item.created_at.strftime("%d/%m/%Y %H:%M") if item.created_at else "-" }}</small>
+                </div>
+                <span class="count-pill dashboard-count-pill">{{ item.target_type or "-" }}</span>
+            </div>
+            {% else %}
+            <p>Nenhum evento de auditoria registrado.</p>
+            {% endfor %}
+        </div>
+    </article>
+</section>
+
+<section class="dashboard-detail-grid">
+    <article class="dashboard-metric-card card">
+        <div class="dashboard-card-head">
+            <div>
+                <span class="dashboard-card-kicker">Qualidade</span>
+                <h2>Capacidade de contato da base</h2>
+            </div>
+            <strong class="dashboard-side-value">{{ "{:.1f}".format(phone_ratio).replace(".", ",") }}%</strong>
+        </div>
+        <div class="dashboard-contact-grid">
+            <div class="dashboard-contact-card is-positive">
                 <span>Com telefone</span>
-                <strong>{{ phone_ratio }}%</strong>
+                <strong>{{ "{:,}".format(total_with_phone).replace(",", ".") }}</strong>
             </div>
-            <div class="progress-bar muted-bar">
-                <span class="fill orange" style="width: {{ no_phone_ratio }}%"></span>
-            </div>
-            <div class="legend-row">
+            <div class="dashboard-contact-card">
                 <span>Sem telefone</span>
-                <strong>{{ no_phone_ratio }}%</strong>
+                <strong>{{ "{:,}".format(total_without_phone).replace(",", ".") }}</strong>
             </div>
         </div>
-    </div>
+        <div class="progress-stack dashboard-progress-stack">
+            <div class="dashboard-progress-block">
+                <div class="legend-row">
+                    <span>Base acionavel</span>
+                    <strong>{{ "{:.1f}".format(phone_ratio).replace(".", ",") }}%</strong>
+                </div>
+                <div class="progress-bar">
+                    <span class="fill green" style="width: {{ phone_ratio }}%"></span>
+                </div>
+            </div>
+            <div class="dashboard-progress-block">
+                <div class="legend-row">
+                    <span>Base sem telefone</span>
+                    <strong>{{ "{:.1f}".format(no_phone_ratio).replace(".", ",") }}%</strong>
+                </div>
+                <div class="progress-bar muted-bar">
+                    <span class="fill orange" style="width: {{ no_phone_ratio }}%"></span>
+                </div>
+            </div>
+        </div>
+    </article>
 
-    <div class="card chart-card">
-        <h2>Base por UF</h2>
-        <div class="mini-chart">
+    <article class="dashboard-metric-card card">
+        <div class="dashboard-card-head">
+            <div>
+                <span class="dashboard-card-kicker">Resumo operacional</span>
+                <h2>Leitura rapida da operacao</h2>
+            </div>
+            {% if top_state %}
+            <strong class="dashboard-side-value">{{ top_state.uf }}</strong>
+            {% else %}
+            <strong class="dashboard-side-value">-</strong>
+            {% endif %}
+        </div>
+        <div class="dashboard-insight-list">
+            <div class="dashboard-insight-item">
+                <span>UF lider da base</span>
+                <strong>
+                    {% if top_state %}
+                    {{ top_state.uf }} com {{ "{:,}".format(top_state.count).replace(",", ".") }} registros
+                    {% else %}
+                    Nenhum dado de UF importado
+                    {% endif %}
+                </strong>
+            </div>
+            <div class="dashboard-insight-item">
+                <span>Media por campanha</span>
+                <strong>{{ "{:,}".format(avg_clients_per_campaign).replace(",", ".") }} clientes consolidados</strong>
+            </div>
+            <div class="dashboard-insight-item">
+                <span>Ultima exportacao</span>
+                <strong>{{ latest_export_label }}</strong>
+            </div>
+            <div class="dashboard-insight-item">
+                <span>Estrutura da operacao</span>
+                <strong>Importacao, consulta, segmentacao e geracao de listas em uma base unica</strong>
+            </div>
+        </div>
+    </article>
+</section>
+
+<section class="dashboard-detail-grid">
+    <article class="dashboard-metric-card card">
+        <div class="dashboard-card-head">
+            <div>
+                <span class="dashboard-card-kicker">Distribuicao</span>
+                <h2>Base por UF</h2>
+            </div>
+            <strong class="dashboard-side-value">{{ states_chart | length }}</strong>
+        </div>
+        <div class="mini-chart dashboard-state-chart">
             {% for item in states_chart %}
-            <div class="mini-bar-row">
-                <span>{{ item.uf }}</span>
+            <div class="mini-bar-row dashboard-state-row">
+                <span class="dashboard-state-label">{{ item.uf }}</span>
                 <div class="mini-bar"><span style="width: {{ item.pct }}%"></span></div>
-                <strong>{{ item.count }}</strong>
+                <strong>{{ "{:,}".format(item.count).replace(",", ".") }}</strong>
             </div>
             {% else %}
             <p>Nenhum dado de UF importado ainda.</p>
             {% endfor %}
         </div>
-    </div>
-</section>
+    </article>
 
-<section class="dashboard-grid two-columns">
-    <div class="card">
-        <h2>Ultimas campanhas</h2>
-        <div class="stack-list">
-            {% for batch in latest_batches %}
-            <div class="stack-item">
-                <div>
-                    <strong>{{ "%02d" | format(batch.mes_referencia) }}/{{ batch.ano_referencia }}</strong>
-                    <p>{{ batch.origem_pasta }}</p>
-                </div>
-                <span class="status-pill">{{ batch.status }}</span>
+    <article class="dashboard-metric-card card">
+        <div class="dashboard-card-head">
+            <div>
+                <span class="dashboard-card-kicker">Atividade recente</span>
+                <h2>Ultimas exportacoes</h2>
             </div>
-            {% else %}
-            <p>Nenhuma campanha importada.</p>
-            {% endfor %}
+            <strong class="dashboard-side-value">{{ latest_exports | length }}</strong>
         </div>
-    </div>
-
-    <div class="card">
-        <h2>Ultimas exportacoes</h2>
-        <div class="stack-list">
+        <div class="stack-list dashboard-stack-list">
             {% for item in latest_exports %}
             {% set filename = item.arquivo_saida.split('\\')[-1].split('/')[-1] %}
-            <div class="stack-item">
-                <div>
+            <div class="stack-item dashboard-stack-item">
+                <div class="dashboard-stack-main">
                     <a href="/downloads/{{ filename }}"><strong>{{ filename }}</strong></a>
-                    <p>{{ item.criado_em }}</p>
+                    <p>{{ item.criado_em.strftime("%d/%m/%Y %H:%M") if item.criado_em else "-" }}</p>
                 </div>
-                <span class="count-pill">{{ item.total_registros }}</span>
+                <span class="count-pill dashboard-count-pill">{{ "{:,}".format(item.total_registros).replace(",", ".") }}</span>
             </div>
             {% else %}
             <p>Nenhuma exportacao registrada.</p>
             {% endfor %}
         </div>
-    </div>
+    </article>
+</section>
+
+<section class="dashboard-activity-grid">
+    <article class="card dashboard-activity-card">
+        <div class="dashboard-card-head">
+            <div>
+                <span class="dashboard-card-kicker">Campanhas recentes</span>
+                <h2>Ultimas importacoes</h2>
+            </div>
+            <strong class="dashboard-side-value">{{ latest_batches | length }}</strong>
+        </div>
+        <div class="stack-list dashboard-stack-list">
+            {% for batch in latest_batches %}
+            <div class="stack-item dashboard-stack-item">
+                <div class="dashboard-stack-main">
+                    <strong>{{ "%02d" | format(batch.mes_referencia) }}/{{ batch.ano_referencia }}</strong>
+                    <p>{{ batch.origem_pasta }}</p>
+                    <small>{{ batch.data_importacao.strftime("%d/%m/%Y %H:%M") if batch.data_importacao else "-" }}</small>
+                </div>
+                <span class="status-pill dashboard-status-pill">{{ batch.status }}</span>
+            </div>
+            {% else %}
+            <p>Nenhuma campanha importada.</p>
+            {% endfor %}
+        </div>
+    </article>
+
+    <article class="card dashboard-activity-card">
+        <div class="dashboard-card-head">
+            <div>
+                <span class="dashboard-card-kicker">Direcionamento</span>
+                <h2>Como usar a base</h2>
+            </div>
+            <strong class="dashboard-side-value">4</strong>
+        </div>
+        <div class="dashboard-action-list">
+            <div class="dashboard-action-item">
+                <strong>1. Validar volume importado</strong>
+                <p>Confira campanhas, arquivos e ultimo processamento antes de montar a lista.</p>
+            </div>
+            <div class="dashboard-action-item">
+                <strong>2. Priorizar base acionavel</strong>
+                <p>Use a cobertura telefonica para definir rapidamente o potencial de contato.</p>
+            </div>
+            <div class="dashboard-action-item">
+                <strong>3. Cortar por UF</strong>
+                <p>Distribua operacao e campanhas a partir dos estados com maior massa de registros.</p>
+            </div>
+            <div class="dashboard-action-item">
+                <strong>4. Exportar com rastreabilidade</strong>
+                <p>Use as ultimas exportacoes como referencia de volume e horario de geracao.</p>
+            </div>
+        </div>
+    </article>
 </section>
 {% endblock %}
