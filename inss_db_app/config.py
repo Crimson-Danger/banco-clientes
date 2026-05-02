@@ -9,9 +9,18 @@ BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on", "sim"}
+
+
 def build_database_url() -> str:
     explicit_url = os.getenv("DATABASE_URL", "").strip()
     if explicit_url:
+        if not explicit_url.startswith("postgresql+psycopg://"):
+            raise RuntimeError("DATABASE_URL invalida: apenas PostgreSQL (postgresql+psycopg://) e suportado.")
         return explicit_url
 
     pg_host = os.getenv("PGHOST", "").strip()
@@ -24,8 +33,10 @@ def build_database_url() -> str:
         if pg_password:
             auth += f":{pg_password}"
         return f"postgresql+psycopg://{auth}@{pg_host}:{pg_port}/{pg_database}"
-
-    return f"sqlite:///{(PROJECT_DIR / 'inss_clientes.db').as_posix()}"
+    raise RuntimeError(
+        "Configuracao de banco ausente. Defina DATABASE_URL (postgresql+psycopg://...) "
+        "ou PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE."
+    )
 
 
 @dataclass(frozen=True)
@@ -39,6 +50,24 @@ class Settings:
     session_secret_key: str = os.getenv("APP_SESSION_SECRET", "inss-clientes-session-secret")
     default_admin_username: str = os.getenv("APP_DEFAULT_ADMIN_USERNAME", "admin")
     default_admin_password: str = os.getenv("APP_DEFAULT_ADMIN_PASSWORD", "admin123")
+    enable_cep_enrichment: bool = env_flag("APP_ENABLE_CEP_ENRICHMENT", default=False)
+    viacep_timeout_seconds: float = float(os.getenv("APP_VIACEP_TIMEOUT_SECONDS", "3"))
+    viacep_base_url: str = os.getenv("APP_VIACEP_BASE_URL", "https://viacep.com.br/ws").rstrip("/")
+    enable_ddd_enrichment: bool = env_flag("APP_ENABLE_DDD_ENRICHMENT", default=False)
+    brasilapi_timeout_seconds: float = float(os.getenv("APP_BRASILAPI_TIMEOUT_SECONDS", "3"))
+    brasilapi_base_url: str = os.getenv("APP_BRASILAPI_BASE_URL", "https://brasilapi.com.br/api").rstrip("/")
+    enable_startup_address_backfill: bool = env_flag("APP_ENABLE_STARTUP_ADDRESS_BACKFILL", default=True)
+    startup_address_backfill_batch_size: int = int(os.getenv("APP_STARTUP_ADDRESS_BACKFILL_BATCH_SIZE", "250"))
+    enable_startup_schema_maintenance: bool = env_flag("APP_ENABLE_STARTUP_SCHEMA_MAINTENANCE", default=True)
+    facta_homolog_base: str = os.getenv("FACTA_HOMOLOG_BASE", "https://webservice-homol.facta.com.br").rstrip("/")
+    facta_offline_base: str = os.getenv("FACTA_OFFLINE_BASE", "https://cltoff.facta.com.br").rstrip("/")
+    facta_username: str = os.getenv("FACTA_USERNAME", "")
+    facta_password: str = os.getenv("FACTA_PASSWORD", "")
+    c6_worker_enabled: bool = env_flag("C6_WORKER_ENABLED", default=False)
+    c6_base_url: str = os.getenv("C6_BASE_URL", "https://marketplace-proposal-service-api-p.c6bank.info").rstrip("/")
+    c6_username: str = os.getenv("C6_USERNAME", "").strip()
+    c6_password: str = os.getenv("C6_PASSWORD", "").strip()
+    c6_timeout_seconds: float = float(os.getenv("C6_TIMEOUT_SECONDS", "20"))
 
 
 settings = Settings()

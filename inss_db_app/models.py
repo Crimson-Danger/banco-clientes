@@ -108,6 +108,7 @@ class Client(Base):
     cidade_atual: Mapped[str] = mapped_column(String(120), nullable=False, default="", index=True)
     melhor_telefone: Mapped[str] = mapped_column(String(20), nullable=False, default="")
     tem_telefone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    do_not_call: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     tem_inss: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     tem_governo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     pis_atual: Mapped[str] = mapped_column(String(20), nullable=False, default="")

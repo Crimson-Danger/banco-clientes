@@ -157,6 +157,18 @@
                         <span>CEP</span>
                         <strong>{{ segment.cep or "-" }}</strong>
                     </div>
+                    <div class="client-view-info-item">
+                        <span>Validacao regional</span>
+                        <strong>
+                            {% if segment.regional_alert %}
+                                {{ segment.regional_alert }}
+                            {% elif segment.ddd_phone and segment.ddd_uf %}
+                                DDD {{ segment.ddd_phone }} compativel com {{ segment.ddd_uf }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </strong>
+                    </div>
                 </div>
             </div>
 

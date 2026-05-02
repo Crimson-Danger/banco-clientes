@@ -1,27 +1,35 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import csv
+import io
 import json
 import hashlib
 import hmac
 import mimetypes
 from pathlib import Path
 import threading
+import traceback
 from types import SimpleNamespace
 from urllib.parse import urlencode
 from urllib.parse import quote_plus
+from datetime import UTC, datetime
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
+from openpyxl import load_workbook
 
 from .auth import hash_password, verify_password
+from .c6_worker_loan import C6WorkerLoanError, c6_worker_loan_client
 from .config import settings
-from .database import Base, SessionLocal, engine, ensure_runtime_indexes
+from .database import Base, SessionLocal, engine, ensure_runtime_indexes, validate_runtime_schema
+from .facta import FactaError, build_facta_client
 from .importer import (
+    backfill_missing_addresses,
     FilterSet,
     count_client_results,
     create_import_batch,
@@ -33,12 +41,13 @@ from .importer import (
     import_public_campaign_updates,
     import_phone_enrichments,
     normalize_base_segment,
+    normalize_cpf,
     parse_decimal,
     process_import_batch,
     query_clients,
     save_uploaded_files,
 )
-from .models import AppUser, AuditLog, Client, ClientOccurrence, ExportHistory, ExportJob, ImportBatch, PhoneEnrichment, SavedFilter, SourceFile
+from .models import AppUser, AuditLog, Client, ClientOccurrence, ExportHistory, ExportJob, ImportBatch, PhoneEnrichment, PublicCampaignUpdate, SavedFilter, SourceFile
 from .schemas import ImportRequest
 
 
@@ -89,9 +98,15 @@ def format_dashboard_datetime(value) -> str:
 
 
 def current_utc():
-    from datetime import UTC, datetime
-
     return datetime.now(UTC)
+
+
+def is_future_timestamp(value: datetime | None) -> bool:
+    if value is None:
+        return False
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value > current_utc()
 
 
 templates.env.filters["brl"] = format_money
@@ -523,15 +538,15 @@ def run_import_job(batch_id: int, request_data: ImportRequest) -> None:
             metadata={"rows_imported": summary.rows_imported, "files_imported": summary.files_imported},
         )
     except Exception as exc:
+        traceback.print_exc()
         log_audit_with_new_session(
             request_data.user_name,
             "import_batch_failed",
             target_type="batch",
             target_id=str(batch_id),
             message="Falha na importacao.",
-            metadata={"erro": str(exc)},
+            metadata={"erro": str(exc), "traceback": traceback.format_exc(limit=20)},
         )
-        raise
     finally:
         session.close()
 
@@ -540,6 +555,23 @@ def create_schema() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_runtime_indexes()
     ensure_default_admin()
+
+
+def run_startup_address_backfill() -> None:
+    session = SessionLocal()
+    try:
+        summary = backfill_missing_addresses(session)
+        print(
+            "Startup address backfill:",
+            f"scanned={summary.scanned_rows}",
+            f"updated={summary.updated_rows}",
+            f"rebuilt_clients={summary.rebuilt_clients}",
+            f"skipped_invalid_cep={summary.skipped_invalid_cep}",
+        )
+    except Exception as exc:
+        print(f"Startup address backfill failed: {exc}")
+    finally:
+        session.close()
 
 
 def get_authenticated_user(request: Request, session: Session) -> AppUser:
@@ -566,7 +598,15 @@ def require_permission(permission: str):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    create_schema()
+    if settings.enable_startup_schema_maintenance:
+        create_schema()
+        print("Startup maintenance: schema ready")
+    else:
+        validate_runtime_schema()
+        ensure_default_admin()
+        print("Startup maintenance: schema validated")
+    if settings.enable_startup_address_backfill:
+        threading.Thread(target=run_startup_address_backfill, daemon=True).start()
     yield
 
 
@@ -623,7 +663,7 @@ def login_submit(
 ) -> HTMLResponse:
     user = session.scalar(select(AppUser).where(AppUser.username == username.strip()))
     redirect_target = safe_next_path(next)
-    if user is not None and user.locked_until and user.locked_until > current_utc():
+    if user is not None and is_future_timestamp(user.locked_until):
         return render_template(
             request,
             "login.html",
@@ -650,6 +690,169 @@ def logout() -> RedirectResponse:
     response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie(AUTH_COOKIE_NAME)
     return response
+
+
+def _extract_cpfs_from_sheet(content: bytes, filename: str, cpf_column: str = "cpf") -> list[str]:
+    name = (filename or "").lower()
+    values: list[str] = []
+    if name.endswith(".csv"):
+        text = content.decode("utf-8", errors="replace")
+        reader = csv.DictReader(io.StringIO(text))
+        for row in reader:
+            raw = str(row.get(cpf_column, "")).strip()
+            if raw:
+                values.append(raw)
+    elif name.endswith(".xlsx"):
+        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb.active
+        header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+        if not header:
+            return []
+        index_by_name = {str(col).strip().lower(): idx for idx, col in enumerate(header) if col is not None}
+        idx = index_by_name.get(cpf_column.lower())
+        if idx is None:
+            return []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            raw = row[idx] if idx < len(row) else None
+            if raw is not None:
+                values.append(str(raw).strip())
+    return values
+
+
+@app.get("/clt", response_class=HTMLResponse)
+def clt_page(
+    request: Request,
+    _current_user: AppUser = Depends(require_permission("can_search")),
+) -> HTMLResponse:
+    return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": ""})
+
+
+@app.post("/clt/consulta-individual", response_class=HTMLResponse)
+def clt_consulta_individual(
+    request: Request,
+    cpf: str = Form(...),
+    nome: str = Form(""),
+    celular: str = Form(""),
+    tipo_envio: str = Form("WHATSAPP"),
+    _current_user: AppUser = Depends(require_permission("can_search")),
+) -> HTMLResponse:
+    cpf_limpo = "".join(ch for ch in cpf if ch.isdigit())
+    if len(cpf_limpo) != 11:
+        return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": "CPF invalido. Informe 11 digitos."}, status_code=400)
+    try:
+        client = build_facta_client()
+        offline = client.consulta_offline(cpf_limpo)
+        mensagem_offline = str(offline.get("mensagem") or "")
+        if "Dados retornados com sucesso" in mensagem_offline:
+            return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": {"cpf": cpf_limpo, "origem": "offline", "offline": offline}, "error": ""})
+
+        if not nome or not celular:
+            return render_template(
+                request,
+                "clt.html",
+                {
+                    "title": "Consulta CLT FACTA",
+                    "result": {"cpf": cpf_limpo, "origem": "sem_dado_offline", "offline": offline, "proximo_passo": "Informe nome e celular para solicitar autorizacao online."},
+                    "error": "",
+                },
+            )
+
+        autorizacao = client.solicita_autorizacao(cpf=cpf_limpo, nome=nome, celular=celular, tipo_envio=tipo_envio)
+        consulta_online = client.consulta_online(cpf_limpo)
+        ofertas = client.consulta_ofertas(cpf_limpo)
+        return render_template(
+            request,
+            "clt.html",
+            {"title": "Consulta CLT FACTA", "result": {"cpf": cpf_limpo, "origem": "online", "autorizacao": autorizacao, "consulta_online": consulta_online, "ofertas": ofertas}, "error": ""},
+        )
+    except FactaError as exc:
+        return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": str(exc)}, status_code=502)
+
+
+@app.post("/clt/consulta-lote", response_class=JSONResponse)
+def clt_consulta_lote(
+    cpfs: str = Form(...),
+    _current_user: AppUser = Depends(require_permission("can_search")),
+) -> JSONResponse:
+    try:
+        client = build_facta_client()
+    except FactaError as exc:
+        return JSONResponse({"total": 0, "resultados": [], "erro": str(exc)}, status_code=500)
+
+    linhas = [item.strip() for item in cpfs.replace("\r", "").split("\n") if item.strip()]
+    resultados: list[dict[str, str]] = []
+    for item in linhas:
+        cpf_limpo = "".join(ch for ch in item if ch.isdigit())
+        if len(cpf_limpo) != 11:
+            resultados.append({"cpf": item, "status": "erro", "mensagem": "CPF invalido"})
+            continue
+        try:
+            offline = client.consulta_offline(cpf_limpo)
+            mensagem = str(offline.get("mensagem") or "")
+            status = "ok_offline" if "Dados retornados com sucesso" in mensagem else "sem_dado_offline"
+            resultados.append({"cpf": cpf_limpo, "status": status, "mensagem": mensagem})
+        except FactaError as exc:
+            resultados.append({"cpf": cpf_limpo, "status": "erro", "mensagem": str(exc)})
+
+    return JSONResponse({"total": len(linhas), "resultados": resultados})
+
+
+@app.post("/clt/consulta-lote-planilha", response_class=HTMLResponse)
+async def clt_consulta_lote_planilha(
+    request: Request,
+    file: UploadFile = File(...),
+    cpf_column: str = Form("cpf"),
+    _current_user: AppUser = Depends(require_permission("can_search")),
+) -> HTMLResponse:
+    try:
+        client = build_facta_client()
+    except FactaError as exc:
+        return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": str(exc)}, status_code=500)
+
+    if not file.filename:
+        return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": "Arquivo sem nome."}, status_code=400)
+    if not (file.filename.lower().endswith(".csv") or file.filename.lower().endswith(".xlsx")):
+        return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": "Formato invalido. Envie .csv ou .xlsx"}, status_code=400)
+
+    content = await file.read()
+    cpfs_raw = _extract_cpfs_from_sheet(content=content, filename=file.filename, cpf_column=cpf_column.strip() or "cpf")
+    if not cpfs_raw:
+        return render_template(
+            request,
+            "clt.html",
+            {"title": "Consulta CLT FACTA", "result": None, "error": f"Nenhum CPF encontrado na coluna '{cpf_column}'."},
+            status_code=400,
+        )
+
+    resultados: list[dict[str, str]] = []
+    for item in cpfs_raw:
+        cpf_limpo = "".join(ch for ch in item if ch.isdigit())
+        if len(cpf_limpo) != 11:
+            resultados.append({"cpf": item, "status": "erro", "mensagem": "CPF invalido"})
+            continue
+        try:
+            offline = client.consulta_offline(cpf_limpo)
+            mensagem = str(offline.get("mensagem") or "")
+            status = "ok_offline" if "Dados retornados com sucesso" in mensagem else "sem_dado_offline"
+            resultados.append({"cpf": cpf_limpo, "status": status, "mensagem": mensagem})
+        except FactaError as exc:
+            resultados.append({"cpf": cpf_limpo, "status": "erro", "mensagem": str(exc)})
+
+    total = len(cpfs_raw)
+    ok_offline = sum(1 for row in resultados if row["status"] == "ok_offline")
+    sem_dado = sum(1 for row in resultados if row["status"] == "sem_dado_offline")
+    erros = sum(1 for row in resultados if row["status"] == "erro")
+    result = {
+        "modo": "lote_planilha",
+        "arquivo": file.filename,
+        "coluna_cpf": cpf_column,
+        "total": total,
+        "ok_offline": ok_offline,
+        "sem_dado_offline": sem_dado,
+        "erros": erros,
+        "resultados": resultados,
+    }
+    return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": result, "error": ""})
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -983,10 +1186,22 @@ def clients_page(
     has_public_matriculas = False
     if public_rows:
         rows_with_matricula = [row for row in public_rows if has_value(row.get("matricula"))]
+        unique_rows_with_matricula: list[dict[str, object]] = []
+        seen_matricula_keys: set[tuple[str, str, str]] = set()
+        for row in rows_with_matricula:
+            row_key = (
+                str(row.get("matricula", "") or "").strip().upper(),
+                str(row.get("servico", "") or "").strip().upper(),
+                str(row.get("situacao", "") or "").strip().upper(),
+            )
+            if row_key in seen_matricula_keys:
+                continue
+            seen_matricula_keys.add(row_key)
+            unique_rows_with_matricula.append(row)
         if rows_with_matricula:
             has_public_matriculas = True
-            public_rows = rows_with_matricula
-            results = rows_with_matricula
+            public_rows = unique_rows_with_matricula
+            results = unique_rows_with_matricula
             if has_active_lookup:
                 highlight = results[0]
     if public_rows and (selected_matricula or selected_servico):
@@ -1029,6 +1244,7 @@ def clients_page(
             "pagination": pagination,
             "saved_filters": saved_filters,
             "favorite_query": urlencode(build_filter_query_params(filters, normalized_segment, selected_matricula=selected_matricula, selected_servico=selected_servico)),
+            "current_query_url": str(request.url.path) + (("?" + request.url.query) if request.url.query else ""),
             "message": request.query_params.get("message", ""),
             "error": request.query_params.get("error", ""),
         },
@@ -1480,7 +1696,12 @@ def client_detail_page(
             .join(SourceFile, SourceFile.id == ClientOccurrence.source_file_id)
             .join(ImportBatch, ImportBatch.id == SourceFile.batch_id)
             .where(ClientOccurrence.cpf == normalized_cpf)
-            .order_by(ClientOccurrence.criado_em.desc())
+            .order_by(
+                ImportBatch.ano_referencia.desc(),
+                ImportBatch.mes_referencia.desc(),
+                SourceFile.id.desc(),
+                ClientOccurrence.id.desc(),
+            )
             .limit(100)
         )
         .all()
@@ -1511,12 +1732,18 @@ def client_detail_page(
         )
 
     segment_details: dict[str, dict[str, object]] = {}
+    public_occurrences_by_key: dict[tuple[str, str], tuple[ClientOccurrence, str, int, int, int]] = {}
+    public_fallback_by_segment: dict[str, tuple[ClientOccurrence, str, int, int, int]] = {}
     for occurrence, file_name, batch_id, ano_referencia, mes_referencia in occurrences:
         segment = normalize_base_segment(occurrence.base_segment)
+        if segment in {"GOVERNO", "PREFEITURA"} and occurrence.matricula:
+            public_occurrences_by_key[(segment, occurrence.matricula)] = (occurrence, file_name, batch_id, ano_referencia, mes_referencia)
+            public_fallback_by_segment.setdefault(segment, (occurrence, file_name, batch_id, ano_referencia, mes_referencia))
         if segment in segment_details:
             continue
         address_parts = [part for part in [occurrence.logradouro, occurrence.numero, occurrence.complemento, occurrence.bairro] if part]
         address_text = ", ".join(str(part) for part in address_parts)
+        extras = _parse_extras_json(occurrence.extras_json or "")
         segment_details[segment] = {
             "segment": segment,
             "label": base_segment_label(segment),
@@ -1543,13 +1770,127 @@ def client_detail_page(
             "species": occurrence.esp or "",
             "matricula": occurrence.matricula or "",
             "entity": occurrence.entidade or "",
+            "cbo_title": occurrence.cbo_titulo or "",
             "service": occurrence.servico or "",
             "status": occurrence.situacao or "",
             "pis": occurrence.pis or client.pis_atual or "",
             "salary": occurrence.salario,
             "file_name": file_name,
             "updated_at": occurrence.criado_em,
+            "regional_alert": _first_extra_value(extras, "ALERTA_REGIONAL"),
+            "ddd_phone": _first_extra_value(extras, "DDD_TELEFONE"),
+            "ddd_uf": _first_extra_value(extras, "DDD_UF_BRASILAPI"),
         }
+
+    public_matricula_details: list[dict[str, object]] = []
+    public_updates = (
+        session.execute(
+            select(PublicCampaignUpdate)
+            .where(PublicCampaignUpdate.cpf == normalized_cpf)
+            .order_by(
+                PublicCampaignUpdate.base_segment.asc(),
+                PublicCampaignUpdate.matricula.asc(),
+                PublicCampaignUpdate.criado_em.desc(),
+                PublicCampaignUpdate.id.desc(),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    seen_public_keys: set[tuple[str, str]] = set()
+    for update in public_updates:
+        segment = normalize_base_segment(update.base_segment)
+        if segment not in {"GOVERNO", "PREFEITURA"} or not update.matricula:
+            continue
+        key = (segment, update.matricula)
+        if key in seen_public_keys:
+            continue
+        seen_public_keys.add(key)
+        occurrence_bundle = public_occurrences_by_key.get(key) or public_fallback_by_segment.get(segment)
+        occurrence = occurrence_bundle[0] if occurrence_bundle else None
+        file_name = occurrence_bundle[1] if occurrence_bundle else "-"
+        ano_referencia = occurrence_bundle[3] if occurrence_bundle else None
+        mes_referencia = occurrence_bundle[4] if occurrence_bundle else None
+        extras = _parse_extras_json(occurrence.extras_json or "") if occurrence is not None else {}
+        public_matricula_details.append(
+            {
+                "segment": segment,
+                "label": base_segment_label(segment),
+                "matricula": update.matricula,
+                "service": update.servico_servidor or (occurrence.servico if occurrence is not None else ""),
+                "status": update.situacao or (occurrence.situacao if occurrence is not None else ""),
+                "entity": occurrence.entidade if occurrence is not None else "",
+                "secretaria": occurrence.secretaria if occurrence is not None else "",
+                "convenio": occurrence.convenio if occurrence is not None else "",
+                "pis": occurrence.pis if occurrence is not None else "",
+                "salary": occurrence.salario if occurrence is not None else None,
+                "margin": update.margem_disponivel if update.margem_disponivel is not None else (occurrence.vl_margem if occurrence is not None else None),
+                "margem_total": update.margem_total if update.margem_total is not None else (occurrence.margem_total if occurrence is not None else None),
+                "margem_liquida": occurrence.margem_liquida if occurrence is not None else None,
+                "margem_bruta": occurrence.margem_bruta if occurrence is not None else None,
+                "margem_utilizada": occurrence.margem_utilizada if occurrence is not None else None,
+                "tipo_vinculo": _first_extra_value(extras, "REGIME_CONTRATACAO", "TIPO DE VINCULO", "TIPO_VINCULO", "VINCULO", "REGIME DE CONTRATACAO"),
+                "cargo_funcao": _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÇÃO", "FUNÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O", "CARGO/FUNCAO", "CARGO FUNCAO", "CBO TITULO", "CBO_TITULO") or (occurrence.cbo_titulo if occurrence is not None else ""),
+                "phone": (occurrence.telefone1 or occurrence.telefone2 or occurrence.telefone3) if occurrence is not None else "",
+                "email": occurrence.email if occurrence is not None else "",
+                "city": occurrence.cidade if occurrence is not None else client.cidade_atual,
+                "uf": occurrence.uf if occurrence is not None else client.uf_atual,
+                "source": update.fonte or (occurrence.base_source if occurrence is not None else ""),
+                "source_file": update.arquivo_origem or file_name,
+                "reference": f"{mes_referencia:02d}/{ano_referencia}" if mes_referencia and ano_referencia else "-",
+                "banks": _first_extra_value(extras, "PUBLIC_UPDATE_BANCOS"),
+                "consignataria": _first_extra_value(extras, "PUBLIC_UPDATE_CONSIGNATARIA_PRINCIPAL") or update.consignataria,
+                "contracts_count": _first_extra_value(extras, "PUBLIC_UPDATE_QTD_CONTRATOS"),
+                "active_count": _first_extra_value(extras, "PUBLIC_UPDATE_QTD_ATIVOS"),
+                "updated_at": update.criado_em or (occurrence.criado_em if occurrence is not None else None),
+            }
+        )
+
+    for (segment, matricula), occurrence_bundle in public_occurrences_by_key.items():
+        if (segment, matricula) in seen_public_keys:
+            continue
+        occurrence, file_name, _batch_id, ano_referencia, mes_referencia = occurrence_bundle
+        extras = _parse_extras_json(occurrence.extras_json or "")
+        public_matricula_details.append(
+            {
+                "segment": segment,
+                "label": base_segment_label(segment),
+                "matricula": matricula,
+                "service": occurrence.servico or "",
+                "status": occurrence.situacao or "",
+                "entity": occurrence.entidade or "",
+                "secretaria": occurrence.secretaria or "",
+                "convenio": occurrence.convenio or "",
+                "pis": occurrence.pis or "",
+                "salary": occurrence.salario,
+                "margin": occurrence.vl_margem,
+                "margem_total": occurrence.margem_total,
+                "margem_liquida": occurrence.margem_liquida,
+                "margem_bruta": occurrence.margem_bruta,
+                "margem_utilizada": occurrence.margem_utilizada,
+                "tipo_vinculo": _first_extra_value(extras, "REGIME_CONTRATACAO", "TIPO DE VINCULO", "TIPO_VINCULO", "VINCULO", "REGIME DE CONTRATACAO"),
+                "cargo_funcao": _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÇÃO", "FUNÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O", "CARGO/FUNCAO", "CARGO FUNCAO", "CBO TITULO", "CBO_TITULO") or occurrence.cbo_titulo,
+                "phone": occurrence.telefone1 or occurrence.telefone2 or occurrence.telefone3 or "",
+                "email": occurrence.email or "",
+                "city": occurrence.cidade or client.cidade_atual,
+                "uf": occurrence.uf or client.uf_atual,
+                "source": occurrence.base_source or "",
+                "source_file": file_name,
+                "reference": f"{mes_referencia:02d}/{ano_referencia}" if mes_referencia and ano_referencia else "-",
+                "banks": _first_extra_value(extras, "PUBLIC_UPDATE_BANCOS"),
+                "consignataria": _first_extra_value(extras, "PUBLIC_UPDATE_CONSIGNATARIA_PRINCIPAL"),
+                "contracts_count": _first_extra_value(extras, "PUBLIC_UPDATE_QTD_CONTRATOS"),
+                "active_count": _first_extra_value(extras, "PUBLIC_UPDATE_QTD_ATIVOS"),
+                "updated_at": occurrence.criado_em,
+            }
+        )
+
+    public_matricula_details.sort(
+        key=lambda item: (
+            {"GOVERNO": 0, "PREFEITURA": 1}.get(str(item.get("segment", "")), 9),
+            str(item.get("matricula", "")),
+        )
+    )
     log_audit(session, current_user.username, "client_detail_viewed", target_type="client", target_id=normalized_cpf, message="Detalhe do cliente consultado.")
     session.commit()
     return render_template(
@@ -1561,6 +1902,7 @@ def client_detail_page(
             "latest_occurrence": latest_occurrence,
             "occurrences": occurrences,
             "segment_details": [segment_details[key] for key in ["INSS", "GOVERNO", "PREFEITURA"] if key in segment_details],
+            "public_matricula_details": public_matricula_details,
         },
     )
 
@@ -1579,6 +1921,36 @@ def save_client_filter(
     log_audit(session, current_user.username, "saved_filter_created", target_type="saved_filter", message="Filtro favorito salvo.", metadata={"nome": favorite_name})
     session.commit()
     return RedirectResponse(url="/clients?message=" + quote_plus("Filtro favorito salvo."), status_code=303)
+
+
+@app.post("/clients/{cpf}/do-not-call")
+def set_client_do_not_call(
+    cpf: str,
+    enabled: bool = Form(False),
+    return_url: str = Form("/clients"),
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    normalized_cpf = normalize_cpf(cpf)
+    client = session.get(Client, normalized_cpf)
+    if client is None:
+        return RedirectResponse(url="/clients?error=" + quote_plus("Cliente nao encontrado para marcar bloqueio de ligacao."), status_code=303)
+    client.do_not_call = bool(enabled)
+    action = "do_not_call_enabled" if client.do_not_call else "do_not_call_disabled"
+    message = "Cliente marcado como NAO LIGAR." if client.do_not_call else "Cliente removido da lista NAO LIGAR."
+    log_audit(
+        session,
+        current_user.username,
+        action,
+        target_type="client",
+        target_id=normalized_cpf,
+        message=message,
+        metadata={"cpf": normalized_cpf, "enabled": client.do_not_call},
+    )
+    session.commit()
+    target_url = safe_next_path(return_url, "/clients")
+    separator = "&" if "?" in target_url else "?"
+    return RedirectResponse(url=f"{target_url}{separator}message=" + quote_plus(message), status_code=303)
 
 
 @app.post("/clients/favorites/{favorite_id}/delete")
@@ -1770,3 +2142,86 @@ def healthcheck(session: Session = Depends(get_session)) -> JSONResponse:
         db_ok = False
     payload = {"status": "ok" if db_ok else "degraded", "database": "ok" if db_ok else "error"}
     return JSONResponse(payload, status_code=200 if db_ok else 503)
+
+
+@app.get("/api/c6/worker-loan/health")
+def c6_worker_health(_current_user: AppUser = Depends(require_permission("can_search"))) -> JSONResponse:
+    payload = {
+        "enabled": settings.c6_worker_enabled,
+        "base_url": settings.c6_base_url,
+        "has_credentials": bool(settings.c6_username and settings.c6_password),
+    }
+    return JSONResponse(payload, status_code=200)
+
+
+@app.post("/api/c6/worker-loan/offer")
+def c6_generate_worker_offer(
+    request: Request,
+    body: dict[str, object] = Body(...),
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> JSONResponse:
+    try:
+        response = c6_worker_loan_client.generate_offer(body)
+    except C6WorkerLoanError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    log_audit(
+        session,
+        current_user.username,
+        "c6_worker_offer_generated",
+        target_type="integration",
+        message="Oferta do consignado trabalhador solicitada.",
+        metadata={"path": str(request.url.path)},
+    )
+    session.commit()
+    return JSONResponse({"status_code": response.status_code, "data": response.payload}, status_code=200)
+
+
+@app.post("/api/c6/worker-loan/simulation")
+def c6_simulate_worker_loan(
+    request: Request,
+    body: dict[str, object] = Body(...),
+    version: str = "v2",
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> JSONResponse:
+    try:
+        response = c6_worker_loan_client.simulate_proposal(body, version=version)
+    except C6WorkerLoanError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    log_audit(
+        session,
+        current_user.username,
+        "c6_worker_simulation_requested",
+        target_type="integration",
+        message="Simulacao do consignado trabalhador solicitada.",
+        metadata={"path": str(request.url.path), "version": version},
+    )
+    session.commit()
+    return JSONResponse({"status_code": response.status_code, "data": response.payload}, status_code=200)
+
+
+@app.post("/api/c6/worker-loan/include")
+def c6_include_worker_loan(
+    request: Request,
+    body: dict[str, object] = Body(...),
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> JSONResponse:
+    try:
+        response = c6_worker_loan_client.include_proposal(body)
+    except C6WorkerLoanError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    log_audit(
+        session,
+        current_user.username,
+        "c6_worker_proposal_included",
+        target_type="integration",
+        message="Inclusao do consignado trabalhador solicitada.",
+        metadata={"path": str(request.url.path)},
+    )
+    session.commit()
+    return JSONResponse({"status_code": response.status_code, "data": response.payload}, status_code=200)

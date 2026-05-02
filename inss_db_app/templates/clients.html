@@ -62,6 +62,7 @@
                 </div>
             </form>
             <div class="consult-actions">
+                <button type="button" class="consult-action ghost consult-filter-trigger" data-filter-drawer-open>Filtros avancados</button>
                 <a href="/clients?base_segment={{ selected_base_segment }}" class="consult-action ghost">Limpar</a>
                 <a href="/exports?base_segment={{ selected_base_segment }}&ddd={{ filters.ddd }}" class="consult-action">Gerar lista</a>
             </div>
@@ -209,6 +210,59 @@
         {% endif %}
     </article>
 
+    {% if selected_base_segment == "INSS" %}
+    <article
+        class="card consult-card consult-profile consult-quick-actions-card"
+        data-quick-name="{% if highlight %}{{ highlight.nome }}{% endif %}"
+        data-quick-cpf="{% if highlight %}{{ highlight.cpf }}{% endif %}"
+        data-quick-phone="{% if highlight %}{{ highlight.telefone or highlight.telefone1 or highlight.telefone2 or highlight.telefone3 or '' }}{% endif %}"
+    >
+        <div class="consult-card-head">
+            <h3>Acoes Rapidas</h3>
+            <span class="consult-icon">+</span>
+        </div>
+        {% if highlight %}
+        <form method="post" action="/clients/{{ highlight.cpf }}/do-not-call" class="consult-quick-dnc-form">
+            <input type="hidden" name="enabled" value="{% if highlight.do_not_call %}false{% else %}true{% endif %}">
+            <input type="hidden" name="return_url" value="{{ current_query_url }}">
+            <button type="submit" class="consult-action {% if highlight.do_not_call %}danger-button{% else %}ghost{% endif %} inline">
+                {% if highlight.do_not_call %}Remover bloqueio NAO LIGAR{% else %}Marcar como NAO LIGAR{% endif %}
+            </button>
+            <small class="muted">
+                Status atual:
+                {% if highlight.do_not_call %}
+                <strong>NAO LIGAR</strong> (nao sai em lista de contato)
+                {% else %}
+                <strong>Liberado para contato</strong>
+                {% endif %}
+            </small>
+        </form>
+        <div class="consult-link-list consult-quick-actions-grid">
+            <a class="consult-link-item consult-quick-whatsapp" href="#" target="_blank" rel="noopener">
+                <div class="consult-link-main">
+                    <strong>WhatsApp</strong>
+                    <span>Abrir conversa com o cliente</span>
+                </div>
+            </a>
+            <button type="button" class="consult-link-item consult-quick-copy-cpf">
+                <div class="consult-link-main">
+                    <strong>Copiar CPF</strong>
+                    <span>Enviar para sistemas externos</span>
+                </div>
+            </button>
+            <button type="button" class="consult-link-item consult-quick-copy-summary">
+                <div class="consult-link-main">
+                    <strong>Copiar Resumo</strong>
+                    <span>Nome, CPF e telefone</span>
+                </div>
+            </button>
+        </div>
+        {% else %}
+        <p class="muted">Nenhum cliente selecionado.</p>
+        {% endif %}
+    </article>
+    {% endif %}
+
     {% if selected_base_segment != "INSS" and has_public_matriculas and public_rows %}
     <article class="card consult-card consult-links-card">
         <div class="consult-card-head">
@@ -258,47 +312,1152 @@
     </article>
     {% endif %}
 
-    <article class="card consult-card consult-filters">
-        <details class="consult-filters-toggle" {% if filters.base_source or filters.cpf or filters.phone or filters.ddd or filters.name or filters.source_file or filters.year or filters.month or filters.week or filters.uf or filters.city or filters.esp or filters.margin_min or filters.margin_max or filters.age_min or filters.age_max or filters.has_phone is not none %}open{% endif %}>
-            <summary class="consult-card-head consult-card-summary">
-                <h3>Filtros Avancados</h3>
-                <span class="consult-icon">+</span>
-            </summary>
-            <form method="get" class="form-grid consult-filter-grid">
-                <input type="hidden" name="base_segment" value="{{ selected_base_segment }}">
-                <input type="hidden" name="quick_mode" value="{{ filters.quick_mode }}">
-                <input type="hidden" name="quick_value" value="{{ filters.quick_value }}">
-                <input type="hidden" name="selected_matricula" value="{{ selected_matricula }}">
-                <input type="hidden" name="selected_servico" value="{{ selected_servico }}">
-                <label>Fonte/Layout<input type="text" name="base_source" value="{{ filters.base_source }}"></label>
-                <label>CPF<input type="text" name="cpf" value="{{ filters.cpf }}"></label>
-                <label>Telefone<input type="text" name="phone" value="{{ filters.phone }}"></label>
-                <label>DDD<input type="text" name="ddd" maxlength="2" value="{{ filters.ddd }}"></label>
-                <label>Nome<input type="text" name="name" value="{{ filters.name }}"></label>
-                <label>Arquivo<input type="text" name="source_file" value="{{ filters.source_file }}"></label>
-                <label>Ano<input type="number" name="year" value="{{ filters.year or '' }}"></label>
-                <label>Mes<input type="number" name="month" value="{{ filters.month or '' }}"></label>
-                <label>Semana<input type="text" name="week" value="{{ filters.week }}"></label>
-                <label>UF<input type="text" name="uf" maxlength="2" value="{{ filters.uf }}"></label>
-                <label>Cidade<input type="text" name="city" value="{{ filters.city }}"></label>
-                <label>ESP<input type="text" name="esp" value="{{ filters.esp }}"></label>
-                <label>Margem min<input type="text" name="margin_min" value="{{ filters.margin_min or '' }}"></label>
-                <label>Margem max<input type="text" name="margin_max" value="{{ filters.margin_max or '' }}"></label>
-                <label>Idade min<input type="number" name="age_min" min="0" value="{{ filters.age_min or '' }}"></label>
-                <label>Idade max<input type="number" name="age_max" min="0" value="{{ filters.age_max or '' }}"></label>
-                <label>Telefone disponivel
-                    <select name="has_phone">
-                        <option value="" {% if filters.has_phone is none %}selected{% endif %}>Todos</option>
-                        <option value="sim" {% if filters.has_phone == true %}selected{% endif %}>Com telefone</option>
-                        <option value="nao" {% if filters.has_phone == false %}selected{% endif %}>Sem telefone</option>
-                    </select>
-                </label>
-                <div class="consult-filter-actions">
-                    <button type="submit">Aplicar filtros</button>
-                    <a href="/clients?base_segment={{ selected_base_segment }}" class="consult-action ghost inline">Limpar tudo</a>
+</section>
+{% if selected_base_segment == "INSS" %}
+<section class="consult-simulator-section">
+    <article class="card consult-card consult-simulator-card consult-simulator-card--full">
+        <div class="consult-card-head">
+            <h3>Central de Simulacao INSS</h3>
+            <span class="consult-icon">$</span>
+        </div>
+        <div
+            class="consult-sim-shell"
+            data-default-margin="{% if highlight and highlight.vl_margem is not none %}{{ highlight.vl_margem }}{% endif %}"
+            data-default-rmc="{% if highlight and highlight.vl_rmc is not none %}{{ highlight.vl_rmc }}{% endif %}"
+            data-client-species="{% if highlight %}{{ highlight.esp or '' }}{% endif %}"
+            data-client-name="{% if highlight %}{{ highlight.nome }}{% endif %}"
+        >
+            <div class="consult-sim-overview">
+                <div class="consult-sim-banner">
+                    <div>
+                        <span class="consult-sim-kicker">Central de ofertas</span>
+                        <strong class="consult-sim-margin">{{ highlight.nome if highlight else 'Nenhum cliente selecionado' }}</strong>
+                        <small>{% if highlight %}Base atual pronta para contrato, cartao e saque.{% else %}Selecione um cliente INSS para puxar margem livre e RMC automaticamente.{% endif %}</small>
+                    </div>
                 </div>
-            </form>
-        </details>
+
+                <div class="consult-sim-metrics">
+                    <article class="consult-sim-metric metric-green">
+                        <span>Margem disponivel</span>
+                        <strong class="consult-metric-margin">{{ highlight.vl_margem | brl if highlight and highlight.vl_margem is not none else 'R$ 0,00' }}</strong>
+                    </article>
+                    <article class="consult-sim-metric metric-emerald">
+                        <span>Margem cartao</span>
+                        <strong class="consult-metric-rmc">{{ highlight.vl_rmc | brl if highlight and highlight.vl_rmc is not none else 'R$ 0,00' }}</strong>
+                    </article>
+                    <article class="consult-sim-metric metric-orange">
+                        <span>Margem saque</span>
+                        <strong class="consult-metric-saque">R$ 0,00</strong>
+                    </article>
+                    <article class="consult-sim-metric metric-blue">
+                        <span>Margem compras</span>
+                        <strong class="consult-metric-compras">R$ 0,00</strong>
+                    </article>
+                </div>
+            </div>
+
+            <div class="consult-sim-modebar" role="tablist" aria-label="Tipos de simulacao">
+                <button type="button" class="consult-sim-mode is-active" data-sim-mode="contrato">Margem disponivel</button>
+                <button type="button" class="consult-sim-mode" data-sim-mode="cartoes">Cartoes INSS</button>
+            </div>
+
+            <section class="consult-sim-panel is-active" data-sim-panel="contrato">
+                <div class="consult-sim-panel-head">
+                    <div>
+                        <span class="consult-sim-panel-kicker">Novo contrato</span>
+                        <h4>Margem disponivel</h4>
+                        <p>Fluxo para emprestimo consignado tradicional.</p>
+                    </div>
+                    <label class="consult-sim-check">
+                        <input type="checkbox" class="consult-sim-use-margin" {% if highlight and highlight.vl_margem is not none %}checked{% else %}disabled{% endif %}>
+                        <span>Usar margem do cliente como parcela</span>
+                    </label>
+                </div>
+
+                <div class="form-grid consult-sim-grid">
+                    <label>Valor parcela
+                        <input type="text" class="consult-sim-input consult-sim-parcela" value="">
+                    </label>
+                    <label class="consult-bank-field">Banco
+                        <div class="consult-bank-row-inline">
+                            <select class="consult-sim-input consult-sim-banco">
+                                <option value="">Selecionar banco</option>
+                            </select>
+                            <span class="consult-bank-logo-preview" data-bank-logo-main></span>
+                        </div>
+                    </label>
+                    <label class="consult-sim-grid-full">Tabela
+                        <select class="consult-sim-input consult-sim-tabela">
+                            <option value="">Selecionar tabela</option>
+                        </select>
+                    </label>
+                    <label>Prazo
+                        <input type="number" min="1" step="1" class="consult-sim-input consult-sim-prazo" placeholder="Ex.: 96">
+                    </label>
+                    <label>Taxa (% a.m.)
+                        <input type="text" class="consult-sim-input consult-sim-taxa" placeholder="Ex.: 1,85">
+                    </label>
+                </div>
+
+                <div class="consult-sim-result">
+                    <span>Valor Cliente</span>
+                    <strong class="consult-sim-total">R$ 0,00</strong>
+                    <small class="consult-sim-method">Selecione uma tabela para usar o valor real da base. Sem tabela, a tela usa uma estimativa por taxa e prazo.</small>
+                </div>
+
+                <div class="consult-sim-actions">
+                    <button type="button" class="consult-action inline consult-sim-copy">Copiar simulacao</button>
+                    <button type="button" class="consult-action ghost inline consult-sim-reset">Limpar</button>
+                </div>
+            </section>
+
+            <section class="consult-sim-panel" data-sim-panel="cartoes" hidden>
+                <div class="consult-rmc-hero">
+                    <div class="consult-rmc-hero-bar">Cartao de Credito (RMC)</div>
+                    <div class="consult-rmc-hero-body">
+                        <p class="consult-rmc-hero-status">{% if highlight and highlight.vl_rmc is not none and highlight.vl_rmc > 0 %}Margem RMC disponivel para simulacao{% else %}Nao possui margem RMC disponivel{% endif %}</p>
+                        <div class="consult-rmc-hero-metrics">
+                            <article class="consult-rmc-metric metric-green">
+                                <span>Margem Cartao</span>
+                                <strong class="consult-metric-rmc-panel">{{ highlight.vl_rmc | brl if highlight and highlight.vl_rmc is not none else 'R$ 0,00' }}</strong>
+                            </article>
+                            <article class="consult-rmc-metric metric-orange">
+                                <span>Margem Saque</span>
+                                <strong class="consult-metric-saque-panel">R$ 0,00</strong>
+                            </article>
+                            <article class="consult-rmc-metric metric-blue">
+                                <span>Margem Compras</span>
+                                <strong class="consult-metric-compras-panel">R$ 0,00</strong>
+                            </article>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="consult-sim-panel-head">
+                    <div>
+                        <span class="consult-sim-panel-kicker">Cartoes RMC</span>
+                        <h4>Simulador de ate 2 cartoes</h4>
+                        <p>Combine 2 operacoes entre cartao sem saque e cartao com saque.</p>
+                    </div>
+                    <div class="consult-card-rule-note">
+                        <strong class="consult-card-rule-badge">Regra</strong>
+                        <span>Especies 87 e 88 nao podem usar o 2o cartao.</span>
+                    </div>
+                </div>
+
+                <div class="consult-card-duo">
+                    <article class="consult-card-slot" data-card-slot="1">
+                        <div class="consult-card-slot-head">
+                            <div>
+                                <span class="consult-sim-panel-kicker">Cartao 1</span>
+                                <h5>Primeira operacao</h5>
+                            </div>
+                            <span class="consult-card-slot-tag">Ativo</span>
+                        </div>
+                        <div class="consult-card-slot-section">
+                            <div class="consult-card-slot-section-head">
+                                <strong>Configuracao</strong>
+                                <small>Defina operacao, banco e prazo</small>
+                            </div>
+                        <div class="form-grid consult-card-slot-grid">
+                            <label class="consult-card-op-field">Operacao
+                                <select class="consult-sim-input consult-card-op" data-card-slot-input="1">
+                                    <option value="sem_saque">Sem saque</option>
+                                    <option value="com_saque">Com saque</option>
+                                </select>
+                            </label>
+                            <label class="consult-bank-field consult-card-bank-field">Banco
+                                <div class="consult-bank-row-inline">
+                                    <select class="consult-sim-input consult-card-bank" data-card-slot-input="1"></select>
+                                    <span class="consult-bank-logo-preview" data-bank-logo-slot="1"></span>
+                                </div>
+                            </label>
+                            <label class="consult-card-table-field">Tabela
+                                <select class="consult-sim-input consult-card-table" data-card-slot-input="1">
+                                    <option value="">Selecionar tabela</option>
+                                </select>
+                            </label>
+                            <label class="consult-card-prazo-field">Prazo
+                                <select class="consult-sim-input consult-card-prazo" data-card-slot-input="1">
+                                    <option value="">Selecionar prazo</option>
+                                </select>
+                            </label>
+                            <label class="consult-card-taxa-field">Taxa (% a.m.)
+                                <input type="text" class="consult-sim-input consult-card-taxa" data-card-slot-input="1" readonly>
+                            </label>
+                            <label class="consult-card-margin-field">Margem usada
+                                <input type="text" class="consult-sim-input consult-card-margin" data-card-slot-input="1" readonly>
+                            </label>
+                        </div>
+                        </div>
+                        <div class="consult-card-slot-section">
+                            <div class="consult-card-slot-section-head">
+                                <strong>Resultado</strong>
+                                <small>Resumo da oferta selecionada</small>
+                            </div>
+                        <div class="consult-card-result-grid">
+                            <article class="consult-card-result">
+                                <span>Limite cartao</span>
+                                <strong class="consult-card-limit" data-card-slot-output="1">R$ 0,00</strong>
+                                <small>Tambem aparece no com saque quando o banco tiver oferta de cartao.</small>
+                            </article>
+                            <article class="consult-card-result">
+                                <span>Parcela do saque</span>
+                                <strong class="consult-card-parcela" data-card-slot-output="1">R$ 0,00</strong>
+                                <small>Mostra a parcela usada na operacao com saque.</small>
+                            </article>
+                            <article class="consult-card-result highlight">
+                                <span>Valor liberado</span>
+                                <strong class="consult-card-liberado" data-card-slot-output="1">R$ 0,00</strong>
+                                <small class="consult-card-method" data-card-slot-method="1">Selecione banco e operacao.</small>
+                            </article>
+                        </div>
+                        </div>
+                    </article>
+
+                    <article class="consult-card-slot" data-card-slot="2">
+                        <div class="consult-card-slot-head">
+                            <div>
+                                <span class="consult-sim-panel-kicker">Cartao 2</span>
+                                <h5>Segunda operacao</h5>
+                            </div>
+                            <span class="consult-card-slot-status" data-card-slot-status="2">Disponivel</span>
+                        </div>
+                        <div class="consult-card-slot-section">
+                            <div class="consult-card-slot-section-head">
+                                <strong>Configuracao</strong>
+                                <small>Defina operacao, banco e prazo</small>
+                            </div>
+                        <div class="form-grid consult-card-slot-grid">
+                            <label class="consult-card-op-field">Operacao
+                                <select class="consult-sim-input consult-card-op" data-card-slot-input="2">
+                                    <option value="sem_saque">Sem saque</option>
+                                    <option value="com_saque">Com saque</option>
+                                </select>
+                            </label>
+                            <label class="consult-bank-field consult-card-bank-field">Banco
+                                <div class="consult-bank-row-inline">
+                                    <select class="consult-sim-input consult-card-bank" data-card-slot-input="2"></select>
+                                    <span class="consult-bank-logo-preview" data-bank-logo-slot="2"></span>
+                                </div>
+                            </label>
+                            <label class="consult-card-table-field">Tabela
+                                <select class="consult-sim-input consult-card-table" data-card-slot-input="2">
+                                    <option value="">Selecionar tabela</option>
+                                </select>
+                            </label>
+                            <label class="consult-card-prazo-field">Prazo
+                                <select class="consult-sim-input consult-card-prazo" data-card-slot-input="2">
+                                    <option value="">Selecionar prazo</option>
+                                </select>
+                            </label>
+                            <label class="consult-card-taxa-field">Taxa (% a.m.)
+                                <input type="text" class="consult-sim-input consult-card-taxa" data-card-slot-input="2" readonly>
+                            </label>
+                            <label class="consult-card-margin-field">Margem usada
+                                <input type="text" class="consult-sim-input consult-card-margin" data-card-slot-input="2" readonly>
+                            </label>
+                        </div>
+                        </div>
+                        <div class="consult-card-slot-section">
+                            <div class="consult-card-slot-section-head">
+                                <strong>Resultado</strong>
+                                <small>Resumo da oferta selecionada</small>
+                            </div>
+                        <div class="consult-card-result-grid">
+                            <article class="consult-card-result">
+                                <span>Limite cartao</span>
+                                <strong class="consult-card-limit" data-card-slot-output="2">R$ 0,00</strong>
+                                <small>Tambem aparece no com saque quando o banco tiver oferta de cartao.</small>
+                            </article>
+                            <article class="consult-card-result">
+                                <span>Parcela do saque</span>
+                                <strong class="consult-card-parcela" data-card-slot-output="2">R$ 0,00</strong>
+                                <small>Mostra a parcela usada na operacao com saque.</small>
+                            </article>
+                            <article class="consult-card-result highlight">
+                                <span>Valor liberado</span>
+                                <strong class="consult-card-liberado" data-card-slot-output="2">R$ 0,00</strong>
+                                <small class="consult-card-method" data-card-slot-method="2">Selecione banco e operacao.</small>
+                            </article>
+                        </div>
+                        </div>
+                    </article>
+                </div>
+
+                <div class="consult-card-summary-grid">
+                    <article class="consult-card-result">
+                        <span>Total limite cartao</span>
+                        <strong class="consult-card-total-limit">R$ 0,00</strong>
+                        <small>Soma dos cartoes sem saque selecionados.</small>
+                    </article>
+                    <article class="consult-card-result highlight">
+                        <span>Total liberado</span>
+                        <strong class="consult-card-total-liberado">R$ 0,00</strong>
+                        <small>Soma das operacoes com saque selecionadas.</small>
+                    </article>
+                    <article class="consult-card-result">
+                        <span>Operacoes ativas</span>
+                        <strong class="consult-card-total-ops">0</strong>
+                        <small>Quantidade de cartoes simulados nesta montagem.</small>
+                    </article>
+                </div>
+
+                <div class="consult-sim-actions">
+                    <button type="button" class="consult-action inline consult-card-copy">Copiar simulacao</button>
+                    <button type="button" class="consult-action ghost inline consult-card-reset">Limpar</button>
+                </div>
+            </section>
+        </div>
     </article>
 </section>
+{% endif %}
+
+<div class="consult-filter-drawer" data-filter-drawer hidden>
+    <button type="button" class="consult-filter-drawer-backdrop" data-filter-drawer-close aria-label="Fechar filtros"></button>
+    <aside class="consult-filter-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="consult-filter-drawer-title">
+        <div class="consult-filter-drawer-head">
+            <div>
+                <span class="consult-kicker">Refino opcional</span>
+                <h3 id="consult-filter-drawer-title">Filtros avancados</h3>
+                <p class="muted">Use este painel apenas quando precisar segmentar melhor a lista.</p>
+            </div>
+            <button type="button" class="consult-filter-drawer-close" data-filter-drawer-close aria-label="Fechar filtros">×</button>
+        </div>
+        <form method="get" class="form-grid consult-filter-grid consult-filter-drawer-form">
+            <input type="hidden" name="base_segment" value="{{ selected_base_segment }}">
+            <input type="hidden" name="quick_mode" value="{{ filters.quick_mode }}">
+            <input type="hidden" name="quick_value" value="{{ filters.quick_value }}">
+            <input type="hidden" name="selected_matricula" value="{{ selected_matricula }}">
+            <input type="hidden" name="selected_servico" value="{{ selected_servico }}">
+            <label>Fonte/Layout<input type="text" name="base_source" value="{{ filters.base_source }}"></label>
+            <label>CPF<input type="text" name="cpf" value="{{ filters.cpf }}"></label>
+            <label>Telefone<input type="text" name="phone" value="{{ filters.phone }}"></label>
+            <label>DDD<input type="text" name="ddd" maxlength="2" value="{{ filters.ddd }}"></label>
+            <label>Nome<input type="text" name="name" value="{{ filters.name }}"></label>
+            <label>Arquivo<input type="text" name="source_file" value="{{ filters.source_file }}"></label>
+            <label>Ano<input type="number" name="year" value="{{ filters.year or '' }}"></label>
+            <label>Mes<input type="number" name="month" value="{{ filters.month or '' }}"></label>
+            <label>Semana<input type="text" name="week" value="{{ filters.week }}"></label>
+            <label>UF<input type="text" name="uf" maxlength="2" value="{{ filters.uf }}"></label>
+            <label>Cidade<input type="text" name="city" value="{{ filters.city }}"></label>
+            <label>ESP<input type="text" name="esp" value="{{ filters.esp }}"></label>
+            <label>Margem min<input type="text" name="margin_min" value="{{ filters.margin_min or '' }}"></label>
+            <label>Margem max<input type="text" name="margin_max" value="{{ filters.margin_max or '' }}"></label>
+            <label>Idade min<input type="number" name="age_min" min="0" value="{{ filters.age_min or '' }}"></label>
+            <label>Idade max<input type="number" name="age_max" min="0" value="{{ filters.age_max or '' }}"></label>
+            <label>Telefone disponivel
+                <select name="has_phone">
+                    <option value="" {% if filters.has_phone is none %}selected{% endif %}>Todos</option>
+                    <option value="sim" {% if filters.has_phone == true %}selected{% endif %}>Com telefone</option>
+                    <option value="nao" {% if filters.has_phone == false %}selected{% endif %}>Sem telefone</option>
+                </select>
+            </label>
+            <div class="consult-filter-actions">
+                <button type="submit">Aplicar filtros</button>
+                <a href="/clients?base_segment={{ selected_base_segment }}" class="consult-action ghost inline">Limpar tudo</a>
+            </div>
+        </form>
+    </aside>
+</div>
+{% if selected_base_segment == "INSS" %}
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const SIMULATION_TABLES = [
+        { banco: "SAFRA", codigo_tabela: "314118", nome_tabela: "INSS NOVO 1,65%", taxa_mensal: 1.65, taxa_diaria: 0.0543, fator_diario: 1.000543, prazo: 96, parcela: 567.00, valor_cliente: 26016.89, prioridade: 1 },
+        { banco: "SAFRA", codigo_tabela: "314119", nome_tabela: "INSS NOVO 1,69%", taxa_mensal: 1.69, taxa_diaria: 0.0558, fator_diario: 1.000558, prazo: 96, parcela: 567.00, valor_cliente: 25640.21, prioridade: 2 },
+        { banco: "SAFRA", codigo_tabela: "314120", nome_tabela: "INSS NOVO 1,75%", taxa_mensal: 1.75, taxa_diaria: 0.0579, fator_diario: 1.000579, prazo: 96, parcela: 567.00, valor_cliente: 25096.40, prioridade: 4 },
+        { banco: "SAFRA", codigo_tabela: "314121", nome_tabela: "INSS NOVO 1,79%", taxa_mensal: 1.79, taxa_diaria: 0.0598, fator_diario: 1.000598, prazo: 96, parcela: 567.00, valor_cliente: 24738.10, prioridade: 6 },
+        { banco: "SAFRA", codigo_tabela: "314122", nome_tabela: "INSS NOVO 1,85%", taxa_mensal: 1.85, taxa_diaria: 0.0611, fator_diario: 1.000611, prazo: 96, parcela: 567.00, valor_cliente: 24217.21, prioridade: 8 },
+        { banco: "DAYCOVAL", codigo_tabela: "DIG4", nome_tabela: "4 DIG AOL", taxa_mensal: 1.67, taxa_diaria: 0.0551, fator_diario: 1.000551, prazo: 96, parcela: 567.00, valor_cliente: 25776.40, prioridade: 2 },
+        { banco: "DAYCOVAL", codigo_tabela: "DIG3", nome_tabela: "3 DIG AOL", taxa_mensal: 1.73, taxa_diaria: 0.0573, fator_diario: 1.000573, prazo: 96, parcela: 567.00, valor_cliente: 25228.15, prioridade: 3 },
+        { banco: "DAYCOVAL", codigo_tabela: "DIG2", nome_tabela: "2 DIG AOL", taxa_mensal: 1.80, taxa_diaria: 0.0595, fator_diario: 1.000595, prazo: 96, parcela: 567.00, valor_cliente: 24596.16, prioridade: 5 },
+        { banco: "DAYCOVAL", codigo_tabela: "DIG1", nome_tabela: "1 DIG AOL", taxa_mensal: 1.85, taxa_diaria: 0.0611, fator_diario: 1.000611, prazo: 96, parcela: 567.00, valor_cliente: 24160.57, prioridade: 9 },
+        { banco: "C6", codigo_tabela: "210191", nome_tabela: "INSS ML Flex 2", taxa_mensal: 1.80, taxa_diaria: 0.0595, fator_diario: 1.000595, prazo: 96, parcela: 567.00, valor_cliente: 24500.00, prioridade: 6 },
+        { banco: "C6", codigo_tabela: "210190", nome_tabela: "INSS ML Flex 1", taxa_mensal: 1.83, taxa_diaria: 0.0605, fator_diario: 1.000605, prazo: 96, parcela: 567.00, valor_cliente: 24350.00, prioridade: 7 },
+        { banco: "C6", codigo_tabela: "210206", nome_tabela: "INSS ML Normal", taxa_mensal: 1.85, taxa_diaria: 0.0611, fator_diario: 1.000611, prazo: 96, parcela: 567.00, valor_cliente: 24214.56, prioridade: 9 },
+        { banco: "FACTA", codigo_tabela: "SMART", nome_tabela: "INSS SMART", taxa_mensal: 1.85, taxa_diaria: 0.0611, fator_diario: 1.000611, prazo: 96, parcela: 567.00, valor_cliente: 24189.53, prioridade: 10 },
+        { banco: "BMG", codigo_tabela: "TOKEN", nome_tabela: "INSS DIGITAL TOKEN", taxa_mensal: 1.85, taxa_diaria: 0.0611, fator_diario: 1.000611, prazo: 96, parcela: 567.00, valor_cliente: 24193.57, prioridade: 10 },
+        { banco: "PAN", codigo_tabela: "NORMAL", nome_tabela: "INSS NOVO NORMAL", taxa_mensal: 1.85, taxa_diaria: 0.0611, fator_diario: 1.000611, prazo: 96, parcela: 567.00, valor_cliente: 24216.65, prioridade: 9 },
+        { banco: "DIGIO", codigo_tabela: "ML", nome_tabela: "MARGEM LIVRE", taxa_mensal: 1.85, taxa_diaria: 0.0611, fator_diario: 1.000611, prazo: 96, parcela: 567.00, valor_cliente: 24209.68, prioridade: 9 },
+        { banco: "BANRISUL", codigo_tabela: "NORMAL", nome_tabela: "NORMAL", taxa_mensal: 1.85, taxa_diaria: 0.0611, fator_diario: 1.000611, prazo: 96, parcela: 567.00, valor_cliente: 24199.54, prioridade: 10 },
+        { banco: "QUALIBANK", codigo_tabela: "SEM_SEGURO", nome_tabela: "SEM SEGURO", taxa_mensal: 1.85, taxa_diaria: 0.0611, fator_diario: 1.000611, prazo: 96, parcela: 567.00, valor_cliente: 24094.98, prioridade: 11 }
+    ].map(function (item) {
+        return {
+            ...item,
+            coeficiente: item.parcela > 0 ? item.valor_cliente / item.parcela : 0,
+            id: item.banco + "::" + item.codigo_tabela,
+        };
+    });
+    const CARD_SIMULATION_BASE = [
+        { banco: "PICPAY", operacao: "sem_saque", nome_tabela: "Cartao(plastico)", margem_total: 87.71, margem_saque: 61.40, margem_compra: 26.31, limite_cartao: 2806.72 },
+        { banco: "PICPAY", operacao: "com_saque", nome_tabela: "CARTAO SAQUE - PICPAY", taxa_mensal: 2.46, opcoes: [{ prazo: 96, liberado: 1964.70, parcela: 55.60 }, { prazo: 84, liberado: 1964.70, parcela: 58.15 }] },
+        { banco: "AMIGOZ", operacao: "sem_saque", nome_tabela: "Cartao(plastico)", margem_total: 87.71, margem_saque: 61.40, margem_compra: 26.31, limite_cartao: 2805.84 },
+        { banco: "AMIGOZ", operacao: "com_saque", nome_tabela: "AMIGOZ - INSS - Cartao Consignado", taxa_mensal: 2.46, sample_margin: 56.74, opcoes: [{ prazo: 96, liberado: 1814.95, parcela: 50.46 }, { prazo: 84, liberado: 1814.95, parcela: 52.35 }, { prazo: 72, liberado: 1814.95, parcela: 55.12 }, { prazo: 60, liberado: 1696.38, parcela: 55.45 }, { prazo: 48, liberado: 1524.22, parcela: 55.49 }, { prazo: 36, liberado: 1292.12, parcela: 55.48 }] },
+        { banco: "AMIGOZ", operacao: "com_saque", nome_tabela: "AMIGOZ - INSS - Cartao Consignado C/ SEGURO DIAMANTE", taxa_mensal: 2.46, sample_margin: 56.74, opcoes: [{ prazo: 96, liberado: 1814.95, parcela: 50.46 }, { prazo: 84, liberado: 1814.95, parcela: 52.35 }, { prazo: 72, liberado: 1814.95, parcela: 55.12 }, { prazo: 60, liberado: 1696.38, parcela: 55.45 }, { prazo: 48, liberado: 1524.22, parcela: 55.49 }, { prazo: 36, liberado: 1292.12, parcela: 55.48 }] },
+        { banco: "FACTA", operacao: "com_saque", nome_tabela: "61123 - INSS RMC NORMAL PN S", taxa_mensal: 2.46, opcoes: [{ prazo: 84, liberado: 2061.14, parcela: 61.38 }, { prazo: 72, liberado: 1956.89, parcela: 60.49 }, { prazo: 60, liberado: 1825.84, parcela: 60.70 }, { prazo: 48, liberado: 1641.35, parcela: 61.06 }] },
+        { banco: "BMG", operacao: "sem_saque", nome_tabela: "Cartao(plastico)", margem_total: 87.71, margem_saque: 61.40, margem_compra: 26.31, limite_cartao: 2805.32 },
+        { banco: "BMG", operacao: "com_saque", nome_tabela: "SAQUE AUTORIZADO PARCELADO", taxa_mensal: 2.46, opcoes: [{ prazo: 96, liberado: 1963.72, parcela: 54.69 }] },
+        { banco: "BMG", operacao: "com_saque", nome_tabela: "SAQUE AUTORIZADO PARCELADO - Seguro Mega Prestamista", taxa_mensal: 2.46, opcoes: [{ prazo: 96, liberado: 1963.72, parcela: 54.68 }] },
+        { banco: "BMG", operacao: "com_saque", nome_tabela: "SAQUE AUTORIZADO PARCELADO - Super Prestamista com Saque", taxa_mensal: 2.46, opcoes: [{ prazo: 96, liberado: 1963.72, parcela: 54.68 }] },
+        { banco: "DAYCOVAL", operacao: "sem_saque", nome_tabela: "Cartao(plastico)", margem_total: 87.71, margem_saque: 61.40, margem_compra: 26.31, limite_cartao: 2789.88 },
+        { banco: "DAYCOVAL", operacao: "com_saque", nome_tabela: "NOVO CARTAO COM PRE SAQUE", taxa_mensal: 2.46, opcoes: [{ prazo: 96, liberado: 1952.92, parcela: 55.27 }] },
+        { banco: "DAYCOVAL", operacao: "com_saque", nome_tabela: "NOVO CARTAO COM PRE SAQUE - SEG PRESTAMISTA DIAMANTE", taxa_mensal: 2.46, opcoes: [{ prazo: 96, liberado: 1952.92, parcela: 55.27 }] },
+        { banco: "BRB", operacao: "sem_saque", nome_tabela: "Cartao(plastico)", margem_total: 87.71, margem_saque: 61.40, margem_compra: 26.31, limite_cartao: 2812.33 },
+        { banco: "BRB", operacao: "com_saque", nome_tabela: "INSSCAR01", taxa_mensal: 2.46, opcoes: [{ prazo: 96, liberado: 1968.63, parcela: 55.71 }] }
+    ];
+
+    const shell = document.querySelector(".consult-sim-shell");
+    if (!shell) {
+        return;
+    }
+
+    const defaultMargin = shell.dataset.defaultMargin || "";
+    const defaultRmc = shell.dataset.defaultRmc || "";
+    const clientSpecies = String(shell.dataset.clientSpecies || "").trim();
+    const clientName = shell.dataset.clientName || "Cliente INSS";
+    const modeButtons = Array.from(shell.querySelectorAll("[data-sim-mode]"));
+    const panels = Array.from(shell.querySelectorAll("[data-sim-panel]"));
+    const metricMarginNode = shell.querySelector(".consult-metric-margin");
+    const metricRmcNode = shell.querySelector(".consult-metric-rmc");
+    const metricSaqueNode = shell.querySelector(".consult-metric-saque");
+    const metricComprasNode = shell.querySelector(".consult-metric-compras");
+    const metricRmcPanelNode = shell.querySelector(".consult-metric-rmc-panel");
+    const metricSaquePanelNode = shell.querySelector(".consult-metric-saque-panel");
+    const metricComprasPanelNode = shell.querySelector(".consult-metric-compras-panel");
+
+    const useMargin = shell.querySelector(".consult-sim-use-margin");
+    const parcelaInput = shell.querySelector(".consult-sim-parcela");
+    const bancoInput = shell.querySelector(".consult-sim-banco");
+    const bankLogoMain = shell.querySelector("[data-bank-logo-main]");
+    const tabelaInput = shell.querySelector(".consult-sim-tabela");
+    const prazoInput = shell.querySelector(".consult-sim-prazo");
+    const taxaInput = shell.querySelector(".consult-sim-taxa");
+    const totalNode = shell.querySelector(".consult-sim-total");
+    const methodNode = shell.querySelector(".consult-sim-method");
+    const copyButton = shell.querySelector(".consult-sim-copy");
+    const resetButton = shell.querySelector(".consult-sim-reset");
+
+    const cardSlots = [1, 2].map(function (slotNumber) {
+        return {
+            number: slotNumber,
+            container: shell.querySelector('[data-card-slot="' + slotNumber + '"]'),
+            operation: shell.querySelector('.consult-card-op[data-card-slot-input="' + slotNumber + '"]'),
+            bank: shell.querySelector('.consult-card-bank[data-card-slot-input="' + slotNumber + '"]'),
+            table: shell.querySelector('.consult-card-table[data-card-slot-input="' + slotNumber + '"]'),
+            prazo: shell.querySelector('.consult-card-prazo[data-card-slot-input="' + slotNumber + '"]'),
+            taxa: shell.querySelector('.consult-card-taxa[data-card-slot-input="' + slotNumber + '"]'),
+            margin: shell.querySelector('.consult-card-margin[data-card-slot-input="' + slotNumber + '"]'),
+            parcela: shell.querySelector('.consult-card-parcela[data-card-slot-output="' + slotNumber + '"]'),
+            limit: shell.querySelector('.consult-card-limit[data-card-slot-output="' + slotNumber + '"]'),
+            liberado: shell.querySelector('.consult-card-liberado[data-card-slot-output="' + slotNumber + '"]'),
+            method: shell.querySelector('.consult-card-method[data-card-slot-method="' + slotNumber + '"]'),
+            status: shell.querySelector('[data-card-slot-status="' + slotNumber + '"]'),
+            logoNode: shell.querySelector('[data-bank-logo-slot="' + slotNumber + '"]'),
+        };
+    });
+    const BANK_LOGOS = {
+        SAFRA: "/static/bank_logos/safra.png",
+        DAYCOVAL: "/static/bank_logos/daycoval.webp",
+        C6: "/static/bank_logos/c6.png",
+        FACTA: "/static/bank_logos/facta.png",
+        BMG: "/static/bank_logos/bmg.png",
+        PAN: "/static/bank_logos/pan.png",
+        DIGIO: "/static/bank_logos/digio.png",
+        BANRISUL: "/static/bank_logos/banrisul.png",
+        QUALIBANK: "/static/bank_logos/qualibank.png",
+        PICPAY: "/static/bank_logos/picpay.png",
+        AMIGOZ: "/static/bank_logos/amigoz.png",
+        BRB: "/static/bank_logos/brb.png",
+    };
+    const cardTotalLimitNode = shell.querySelector(".consult-card-total-limit");
+    const cardTotalLiberadoNode = shell.querySelector(".consult-card-total-liberado");
+    const cardTotalOpsNode = shell.querySelector(".consult-card-total-ops");
+    const cardCopyButton = shell.querySelector(".consult-card-copy");
+    const cardResetButton = shell.querySelector(".consult-card-reset");
+
+    const CARD_SEM_SAQUE = CARD_SIMULATION_BASE
+        .filter(function (item) {
+            return item.operacao === "sem_saque";
+        })
+        .map(function (item) {
+            const totalMargin = Number(item.margem_total || 0);
+            const purchaseMargin = Number(item.margem_compra || 0);
+            const cardLimit = Number(item.limite_cartao || 0);
+            const totalFactor = totalMargin > 0 ? cardLimit / totalMargin : 0;
+            return {
+                ...item,
+                fator_total: totalFactor,
+                // No modo saque, o campo "limite" deve representar apenas compras.
+                // A proporcao correta usa o mesmo fator da margem total, nao o limite total por margem de compras.
+                fator_compra: totalFactor,
+                id: item.banco + "::" + item.nome_tabela,
+            };
+        });
+
+    const cardReferenceByBank = CARD_SEM_SAQUE.reduce(function (accumulator, item) {
+        accumulator[item.banco] = item;
+        return accumulator;
+    }, {});
+
+    const CARD_COM_SAQUE = CARD_SIMULATION_BASE
+        .filter(function (item) {
+            return item.operacao === "com_saque";
+        })
+        .flatMap(function (item) {
+            const options = Array.isArray(item.opcoes) && item.opcoes.length
+                ? item.opcoes
+                : [{ prazo: item.prazo, liberado: item.liberado, parcela: item.parcela }];
+            return options.map(function (option) {
+                const sampleParcela = Number(option.parcela || 0);
+                const sampleLiberado = Number(option.liberado || 0);
+                const bankReference = cardReferenceByBank[item.banco] || null;
+                const sampleMargin = Number(item.sample_margin || (bankReference ? Number(bankReference.margem_saque || 0) : 61.40));
+                return {
+                    banco: item.banco,
+                    nome_tabela: item.nome_tabela,
+                    table_id: item.banco + "::" + item.nome_tabela,
+                    taxa_mensal: Number(item.taxa_mensal || 0),
+                    prazo: Number(option.prazo || 0),
+                    sample_margin: sampleMargin,
+                    sample_parcela: sampleParcela,
+                    sample_liberado: sampleLiberado,
+                    id: item.banco + "::" + item.nome_tabela + "::" + String(option.prazo || 0),
+                };
+            });
+        });
+
+    let activeMode = "contrato";
+    const secondCardBlocked = ["87", "88"].includes(clientSpecies.replace(/\D+/g, ""));
+
+    function formatDecimal(value, digits) {
+        return Number(value || 0).toFixed(digits).replace(".", ",");
+    }
+
+    function buildBankOptions() {
+        const banks = Array.from(new Set(SIMULATION_TABLES.map(function (item) {
+            return item.banco;
+        }))).sort();
+        banks.forEach(function (bank) {
+            const option = document.createElement("option");
+            option.value = bank;
+            option.textContent = bank;
+            bancoInput.appendChild(option);
+        });
+    }
+
+    function renderBankLogo(node, bankName) {
+        if (!node) {
+            return;
+        }
+        const bank = String(bankName || "").trim().toUpperCase();
+        if (!bank) {
+            node.innerHTML = "";
+            return;
+        }
+        const logoUrl = BANK_LOGOS[bank];
+        if (logoUrl) {
+            node.innerHTML = '<img src="' + logoUrl + '" alt="' + bank + '" loading="lazy">';
+            return;
+        }
+        node.innerHTML = '<span>' + bank.slice(0, 3) + '</span>';
+    }
+
+    function getSelectedTable() {
+        const tableId = tabelaInput.value;
+        return SIMULATION_TABLES.find(function (item) {
+            return item.id === tableId;
+        }) || null;
+    }
+
+    function fillTableOptions(selectedBank) {
+        const currentId = tabelaInput.value;
+        tabelaInput.innerHTML = '<option value="">Selecionar tabela</option>';
+        SIMULATION_TABLES
+            .filter(function (item) {
+                return !selectedBank || item.banco === selectedBank;
+            })
+            .sort(function (left, right) {
+                return left.prioridade - right.prioridade || right.valor_cliente - left.valor_cliente;
+            })
+            .forEach(function (item) {
+                const option = document.createElement("option");
+                option.value = item.id;
+                option.textContent = item.codigo_tabela + " - " + item.nome_tabela;
+                if (item.id === currentId) {
+                    option.selected = true;
+                }
+                tabelaInput.appendChild(option);
+            });
+    }
+
+    function applyTableDefaults(table) {
+        if (!table) {
+            prazoInput.value = "";
+            taxaInput.value = "";
+            return;
+        }
+        prazoInput.value = table.prazo || "";
+        taxaInput.value = formatDecimal(table.taxa_mensal, 2);
+    }
+
+    function parseNumber(value) {
+        const raw = String(value || "").trim();
+        if (!raw) {
+            return 0;
+        }
+        let normalized = raw.replace(/\s+/g, "");
+        if (normalized.includes(",") && normalized.includes(".")) {
+            normalized = normalized.replace(/\./g, "").replace(",", ".");
+        } else if (normalized.includes(",")) {
+            normalized = normalized.replace(",", ".");
+        }
+        const parsed = Number(normalized);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function formatCurrency(value) {
+        return new Intl.NumberFormat("pt-BR", {
+            style: "currency",
+            currency: "BRL",
+        }).format(value || 0);
+    }
+
+    function setMode(mode) {
+        activeMode = mode;
+        modeButtons.forEach(function (button) {
+            const isActive = button.dataset.simMode === mode;
+            button.classList.toggle("is-active", isActive);
+        });
+        panels.forEach(function (panel) {
+            const isActive = panel.dataset.simPanel === mode;
+            panel.hidden = !isActive;
+            panel.classList.toggle("is-active", isActive);
+        });
+    }
+
+    function pmtFactor(rate, periods) {
+        if (!rate || !periods) {
+            return 0;
+        }
+        return (1 - Math.pow(1 + rate, -periods)) / rate;
+    }
+
+    function setParcelaFromMargin() {
+        const marginValue = parseNumber(defaultMargin);
+        if (!marginValue) {
+            return;
+        }
+        parcelaInput.value = marginValue.toFixed(2).replace(".", ",");
+    }
+
+    function getRmcValue() {
+        return parseNumber(defaultRmc);
+    }
+
+    function getCashoutMarginBase() {
+        return getRmcValue() * 0.7;
+    }
+
+    function getPurchasesMarginBase() {
+        return getRmcValue() * 0.3;
+    }
+
+    function updateMetricNodes() {
+        if (metricMarginNode) {
+            metricMarginNode.textContent = formatCurrency(parseNumber(defaultMargin));
+        }
+        if (metricRmcNode) {
+            metricRmcNode.textContent = formatCurrency(getRmcValue());
+        }
+        if (metricRmcPanelNode) {
+            metricRmcPanelNode.textContent = formatCurrency(getRmcValue());
+        }
+        if (metricSaqueNode) {
+            metricSaqueNode.textContent = formatCurrency(getCashoutMarginBase());
+        }
+        if (metricSaquePanelNode) {
+            metricSaquePanelNode.textContent = formatCurrency(getCashoutMarginBase());
+        }
+        if (metricComprasNode) {
+            metricComprasNode.textContent = formatCurrency(getPurchasesMarginBase());
+        }
+        if (metricComprasPanelNode) {
+            metricComprasPanelNode.textContent = formatCurrency(getPurchasesMarginBase());
+        }
+    }
+
+
+    function normalizeDigits(value) {
+        return String(value || "").replace(/\D+/g, "");
+    }
+
+    function setupQuickActions() {
+        const card = document.querySelector(".consult-quick-actions-card");
+        if (!card) {
+            return;
+        }
+        const name = String(card.dataset.quickName || "").trim();
+        const cpf = normalizeDigits(card.dataset.quickCpf || "");
+        const phone = normalizeDigits(card.dataset.quickPhone || "");
+        const wa = card.querySelector(".consult-quick-whatsapp");
+        const copyCpf = card.querySelector(".consult-quick-copy-cpf");
+        const copySummary = card.querySelector(".consult-quick-copy-summary");
+
+        if (wa) {
+            if (phone.length >= 10) {
+                const waUrl = "https://api.whatsapp.com/send?phone=55" + phone;
+                wa.href = waUrl;
+                wa.setAttribute("target", "_blank");
+                wa.setAttribute("rel", "noopener noreferrer");
+                wa.addEventListener("click", function (event) {
+                    event.preventDefault();
+                    window.open(waUrl, "_blank", "noopener,noreferrer");
+                });
+            } else {
+                wa.href = "#";
+                wa.classList.add("is-disabled");
+                wa.removeAttribute("target");
+            }
+        }
+        if (copyCpf) {
+            copyCpf.addEventListener("click", async function () {
+                if (!cpf) return;
+                await copySimulationText(cpf);
+                copyCpf.querySelector("strong").textContent = "CPF copiado";
+                window.setTimeout(function () {
+                    copyCpf.querySelector("strong").textContent = "Copiar CPF";
+                }, 1400);
+            });
+        }
+        if (copySummary) {
+            copySummary.addEventListener("click", async function () {
+                const payload = [
+                    "Cliente: " + (name || "-"),
+                    "CPF: " + (cpf || "-"),
+                    "Telefone: " + (phone || "-"),
+                ].join("\n");
+                await copySimulationText(payload);
+                copySummary.querySelector("strong").textContent = "Resumo copiado";
+                window.setTimeout(function () {
+                    copySummary.querySelector("strong").textContent = "Copiar Resumo";
+                }, 1400);
+            });
+        }
+    }
+
+    function updateReadonlyState() {
+        const locked = Boolean(useMargin && useMargin.checked && defaultMargin);
+        parcelaInput.readOnly = locked;
+        parcelaInput.classList.toggle("is-locked", locked);
+        if (locked) {
+            setParcelaFromMargin();
+        }
+    }
+
+    function updateTableReadonlyState() {
+        const locked = Boolean(getSelectedTable());
+        [prazoInput, taxaInput].forEach(function (field) {
+            field.readOnly = locked;
+            field.classList.toggle("is-locked", locked);
+        });
+    }
+
+    function calculate() {
+        const parcela = parseNumber(parcelaInput.value);
+        const taxa = parseNumber(taxaInput.value) / 100;
+        const prazo = parseInt(prazoInput.value || "0", 10);
+        const selectedTable = getSelectedTable();
+        const coeficiente = selectedTable ? selectedTable.coeficiente : 0;
+        let total = 0;
+        let method = "Selecione uma tabela para usar o valor real da base. Sem tabela, a tela usa uma estimativa por taxa e prazo.";
+
+        if (parcela > 0 && coeficiente > 0) {
+            total = parcela * coeficiente;
+            method = "Calculo atual: parcela x coeficiente da tabela selecionada.";
+        } else if (parcela > 0 && taxa > 0 && prazo > 0) {
+            total = parcela * pmtFactor(taxa, prazo);
+            method = "Calculo atual: estimativa Price por taxa e prazo.";
+        }
+
+        totalNode.textContent = formatCurrency(total);
+        methodNode.textContent = method;
+    }
+
+    function resetForm() {
+        bancoInput.value = "";
+        fillTableOptions("");
+        tabelaInput.value = "";
+        prazoInput.value = "";
+        taxaInput.value = "";
+        if (useMargin && useMargin.checked) {
+            setParcelaFromMargin();
+        } else {
+            parcelaInput.value = "";
+        }
+        updateTableReadonlyState();
+        calculate();
+    }
+
+    async function copySimulationText(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.setAttribute("readonly", "");
+        textArea.style.position = "fixed";
+        textArea.style.opacity = "0";
+        textArea.style.pointerEvents = "none";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textArea);
+
+        if (!copied) {
+            throw new Error("copy_failed");
+        }
+    }
+
+    function getSlotMarginValue(operation) {
+        return operation === "com_saque" ? getCashoutMarginBase() : getRmcValue();
+    }
+
+    function fillSlotBankOptions(slot) {
+        const source = slot.operation.value === "com_saque" ? CARD_COM_SAQUE : CARD_SEM_SAQUE;
+        const banks = Array.from(new Set(source.map(function (item) { return item.banco; }))).sort();
+        const current = slot.bank.value;
+        slot.bank.innerHTML = "";
+        banks.forEach(function (bank) {
+            const option = document.createElement("option");
+            option.value = bank;
+            option.textContent = bank;
+            if ((current && bank === current) || (!current && bank === banks[0])) {
+                option.selected = true;
+            }
+            slot.bank.appendChild(option);
+        });
+    }
+
+    function fillSlotTableOptions(slot) {
+        const operation = slot.operation.value;
+        const bank = slot.bank.value;
+        const currentValue = slot.table.value;
+        const source = operation === "com_saque" ? CARD_COM_SAQUE : CARD_SEM_SAQUE;
+        const tableMap = new Map();
+        source
+            .filter(function (item) { return item.banco === bank; })
+            .forEach(function (item) {
+                const tableId = operation === "com_saque" ? item.table_id : item.id;
+                if (!tableMap.has(tableId)) {
+                    tableMap.set(tableId, {
+                        id: tableId,
+                        nome_tabela: item.nome_tabela,
+                    });
+                }
+            });
+        const tableOptions = Array.from(tableMap.values());
+        slot.table.innerHTML = '<option value="">Selecionar tabela</option>';
+        slot.table.disabled = tableOptions.length === 0;
+        slot.table.classList.toggle("is-locked", tableOptions.length === 0);
+        tableOptions.forEach(function (item, index) {
+            const option = document.createElement("option");
+            option.value = item.id;
+            option.textContent = item.nome_tabela;
+            if (item.id === currentValue || (!currentValue && index === 0)) {
+                option.selected = true;
+            }
+            slot.table.appendChild(option);
+        });
+    }
+
+    function fillSlotPrazoOptions(slot) {
+        const operation = slot.operation.value;
+        const tableId = slot.table.value;
+        const currentValue = slot.prazo.value;
+        slot.prazo.innerHTML = '<option value="">Selecionar prazo</option>';
+        slot.prazo.disabled = operation !== "com_saque";
+        slot.prazo.classList.toggle("is-locked", operation !== "com_saque");
+        if (operation !== "com_saque") {
+            return;
+        }
+        const options = CARD_COM_SAQUE
+            .filter(function (item) { return item.table_id === tableId; })
+            .sort(function (left, right) { return right.sample_liberado - left.sample_liberado || right.prazo - left.prazo; });
+        options.forEach(function (item, index) {
+            const option = document.createElement("option");
+            option.value = item.id;
+            option.textContent = item.prazo + "x";
+            if (item.id === currentValue || (!currentValue && index === 0)) {
+                option.selected = true;
+            }
+            slot.prazo.appendChild(option);
+        });
+    }
+
+    function getSlotProjection(slot) {
+        const operation = slot.operation.value;
+        const bank = slot.bank.value;
+        const margin = getSlotMarginValue(operation);
+        if (operation === "sem_saque") {
+            const selected = CARD_SEM_SAQUE.find(function (item) { return item.id === slot.table.value; }) || CARD_SEM_SAQUE.find(function (item) { return item.banco === bank; }) || null;
+            const limit = selected ? margin * Number(selected.fator_total || 0) : 0;
+            return {
+                operation: operation,
+                bank: bank,
+                table: selected ? selected.nome_tabela : "",
+                taxa: selected ? Number(selected.taxa_mensal || 0) : 0,
+                prazo: 0,
+                margin: margin,
+                parcela: 0,
+                limit: limit,
+                liberado: 0,
+                method: selected ? "Calculo atual: margem cartao total x fator da tabela selecionada." : "Selecione um banco.",
+            };
+        }
+        const selectedCashout = CARD_COM_SAQUE.find(function (item) { return item.id === slot.prazo.value; }) || null;
+        const pairedCard = CARD_SEM_SAQUE.find(function (item) { return item.banco === bank; }) || null;
+        const cashoutMargin = getCashoutMarginBase();
+        const parcela = selectedCashout && selectedCashout.sample_margin > 0
+            ? cashoutMargin * (Number(selectedCashout.sample_parcela || 0) / Number(selectedCashout.sample_margin || 1))
+            : 0;
+        const liberado = selectedCashout && selectedCashout.sample_margin > 0
+            ? cashoutMargin * (Number(selectedCashout.sample_liberado || 0) / Number(selectedCashout.sample_margin || 1))
+            : 0;
+        const limit = pairedCard ? getPurchasesMarginBase() * Number(pairedCard.fator_compra || 0) : 0;
+        return {
+            operation: operation,
+            bank: bank,
+            table: selectedCashout ? selectedCashout.nome_tabela : "",
+            taxa: selectedCashout ? Number(selectedCashout.taxa_mensal || 0) : 0,
+            prazo: selectedCashout ? Number(selectedCashout.prazo || 0) : 0,
+            margin: margin,
+            parcela: parcela,
+            limit: limit,
+            liberado: liberado,
+            method: selectedCashout
+                ? (pairedCard
+                    ? "Calculo atual: 70% da RMC vira saque pelo prazo e 30% da RMC vira limite do cartao."
+                    : "Calculo atual: liberado pela margem de saque e prazo selecionado.")
+                : "Selecione banco e prazo.",
+        };
+    }
+
+    function applySlotBlockState(slot) {
+        const blocked = secondCardBlocked && slot.number === 2;
+        const controls = [slot.operation, slot.bank, slot.table, slot.prazo];
+        controls.forEach(function (control) {
+            control.disabled = blocked;
+            control.classList.toggle("is-locked", blocked);
+        });
+        if (slot.container) {
+            slot.container.classList.toggle("is-disabled", blocked);
+        }
+        if (slot.status) {
+            slot.status.textContent = blocked ? "Bloqueado para ESP 87/88" : "Disponivel";
+        }
+    }
+
+    function calculateCards() {
+        let totalLimit = 0;
+        let totalLiberado = 0;
+        let activeOps = 0;
+
+        cardSlots.forEach(function (slot) {
+            applySlotBlockState(slot);
+            if (slot.operation.disabled) {
+                slot.taxa.value = "";
+                slot.margin.value = "";
+                if (slot.parcela) {
+                    slot.parcela.textContent = "R$ 0,00";
+                }
+                slot.limit.textContent = "R$ 0,00";
+                slot.liberado.textContent = "R$ 0,00";
+                slot.method.textContent = "Operacao bloqueada para esta especie.";
+                return;
+            }
+
+            fillSlotBankOptions(slot);
+            renderBankLogo(slot.logoNode, slot.bank.value);
+            fillSlotTableOptions(slot);
+            fillSlotPrazoOptions(slot);
+            const projection = getSlotProjection(slot);
+
+            slot.taxa.value = projection.taxa ? formatDecimal(projection.taxa, 2) : "";
+            slot.margin.value = projection.margin ? formatDecimal(projection.margin, 2) : "";
+            if (slot.parcela) {
+                slot.parcela.textContent = formatCurrency(projection.parcela);
+            }
+            slot.limit.textContent = formatCurrency(projection.limit);
+            slot.liberado.textContent = formatCurrency(projection.liberado);
+            slot.method.textContent = projection.method;
+
+            totalLimit += projection.limit;
+            totalLiberado += projection.liberado;
+            if (projection.bank) {
+                activeOps += 1;
+            }
+        });
+
+        cardTotalLimitNode.textContent = formatCurrency(totalLimit);
+        cardTotalLiberadoNode.textContent = formatCurrency(totalLiberado);
+        cardTotalOpsNode.textContent = String(activeOps);
+    }
+
+    buildBankOptions();
+    renderBankLogo(bankLogoMain, bancoInput.value);
+    fillTableOptions("");
+    if (useMargin && useMargin.checked) {
+        setParcelaFromMargin();
+    }
+    updateMetricNodes();
+    setupQuickActions();
+    updateReadonlyState();
+    updateTableReadonlyState();
+    calculate();
+    calculateCards();
+
+    [parcelaInput, prazoInput, taxaInput].forEach(function (field) {
+        field.addEventListener("input", calculate);
+    });
+
+    modeButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+            setMode(button.dataset.simMode || "contrato");
+        });
+    });
+
+    bancoInput.addEventListener("change", function () {
+        renderBankLogo(bankLogoMain, bancoInput.value);
+        fillTableOptions(bancoInput.value);
+        applyTableDefaults(null);
+        updateTableReadonlyState();
+        calculate();
+    });
+
+    tabelaInput.addEventListener("change", function () {
+        const table = getSelectedTable();
+        applyTableDefaults(table);
+        updateTableReadonlyState();
+        calculate();
+    });
+
+    if (useMargin) {
+        useMargin.addEventListener("change", function () {
+            updateReadonlyState();
+            calculate();
+        });
+    }
+
+    cardSlots.forEach(function (slot) {
+        [slot.operation, slot.bank, slot.table, slot.prazo].forEach(function (field) {
+            field.addEventListener("change", calculateCards);
+        });
+    });
+
+    resetButton.addEventListener("click", resetForm);
+    copyButton.addEventListener("click", async function () {
+        const text = [
+            "SIMULACAO INSS",
+            "Cliente: " + clientName,
+            "Banco: " + (bancoInput.value || "-"),
+            "Tabela: " + (getSelectedTable() ? getSelectedTable().codigo_tabela + " - " + getSelectedTable().nome_tabela : "-"),
+            "Parcela: " + (parcelaInput.value || "-"),
+            "Prazo: " + (prazoInput.value || "-"),
+            "Taxa: " + (taxaInput.value || "-"),
+            "Valor Cliente: " + totalNode.textContent,
+        ].join("\n");
+
+        try {
+            await copySimulationText(text);
+            copyButton.textContent = "Simulacao copiada";
+            window.setTimeout(function () {
+                copyButton.textContent = "Copiar simulacao";
+            }, 1800);
+        } catch (error) {
+            copyButton.textContent = "Nao foi possivel copiar";
+            window.setTimeout(function () {
+                copyButton.textContent = "Copiar simulacao";
+            }, 1800);
+        }
+    });
+
+    if (cardResetButton) {
+        cardResetButton.addEventListener("click", function () {
+            cardSlots.forEach(function (slot) {
+                if (!slot.operation.disabled) {
+                    slot.operation.value = "sem_saque";
+                }
+            });
+            calculateCards();
+        });
+    }
+
+    if (cardCopyButton) {
+        cardCopyButton.addEventListener("click", async function () {
+            const text = [
+                "SIMULACAO 2 CARTOES INSS",
+                "Cliente: " + clientName,
+                "Especie: " + (clientSpecies || "-"),
+                "Cartao 1: " + cardSlots[0].operation.value + " | " + (cardSlots[0].bank.value || "-") + " | " + (cardSlots[0].table.value ? cardSlots[0].table.options[cardSlots[0].table.selectedIndex].text : "-") + " | Limite " + cardSlots[0].limit.textContent + " | Liberado " + cardSlots[0].liberado.textContent,
+                "Cartao 2: " + (cardSlots[1].operation.disabled ? "bloqueado" : cardSlots[1].operation.value + " | " + (cardSlots[1].bank.value || "-") + " | " + (cardSlots[1].table.value ? cardSlots[1].table.options[cardSlots[1].table.selectedIndex].text : "-") + " | Limite " + cardSlots[1].limit.textContent + " | Liberado " + cardSlots[1].liberado.textContent),
+                "Total limite: " + cardTotalLimitNode.textContent,
+                "Total liberado: " + cardTotalLiberadoNode.textContent,
+            ].join("\n");
+            try {
+                await copySimulationText(text);
+                cardCopyButton.textContent = "Simulacao copiada";
+                window.setTimeout(function () {
+                    cardCopyButton.textContent = "Copiar simulacao";
+                }, 1800);
+            } catch (error) {
+                cardCopyButton.textContent = "Nao foi possivel copiar";
+                window.setTimeout(function () {
+                    cardCopyButton.textContent = "Copiar simulacao";
+                }, 1800);
+            }
+        });
+    }
+
+    setMode(activeMode);
+});
+</script>
+{% endif %}
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const filterDrawer = document.querySelector("[data-filter-drawer]");
+    const filterOpenButtons = document.querySelectorAll("[data-filter-drawer-open]");
+    const filterCloseButtons = document.querySelectorAll("[data-filter-drawer-close]");
+
+    function toggleFilterDrawer(open) {
+        if (!filterDrawer) {
+            return;
+        }
+        filterDrawer.hidden = !open;
+        document.body.classList.toggle("drawer-open", open);
+    }
+
+    filterOpenButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+            toggleFilterDrawer(true);
+        });
+    });
+
+    filterCloseButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+            toggleFilterDrawer(false);
+        });
+    });
+
+    document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") {
+            toggleFilterDrawer(false);
+        }
+    });
+});
+</script>
 {% endblock %}

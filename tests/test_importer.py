@@ -3,19 +3,23 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from inss_db_app.config import settings
 from inss_db_app.database import Base
 from inss_db_app.importer import (
     FilterSet,
     canonicalize_row_keys,
+    backfill_missing_addresses,
     compute_age_from_birth,
     delete_batch,
     detect_week_label,
     export_clients,
     export_cpfs_for_enrichment,
+    export_updated_clients,
     export_updated_clients_from_latest_enrichment,
     import_phone_enrichments,
     import_files,
@@ -25,7 +29,7 @@ from inss_db_app.importer import (
     query_clients,
     week_label_from_ddb,
 )
-from inss_db_app.models import Client, ClientOccurrence, EnrichmentImportItem, PhoneEnrichment
+from inss_db_app.models import Client, ClientOccurrence, EnrichmentImportItem, ImportBatch, PhoneEnrichment, SourceFile
 from inss_db_app.schemas import ImportRequest
 
 
@@ -67,6 +71,243 @@ def test_normalize_row_with_dot_decimal() -> None:
     assert normalized["vl_margem"] == Decimal("531.30")
     assert normalized["vl_rmi"] == Decimal("1518.00")
     assert normalized["vl_rmc"] == Decimal("75.90")
+
+
+def test_import_enriches_missing_address_from_cep(tmp_path: Path, monkeypatch) -> None:
+    csv_path = tmp_path / "cep_enrichment.csv"
+    csv_path.write_text(
+        "CPF;NOME;CEP;TELEFONE1\n"
+        "12345678900;MARIA SILVA;01001000;11999999999\n",
+        encoding="utf-8",
+    )
+    session = make_session()
+
+    patched_settings = dict(vars(settings))
+    patched_settings["enable_cep_enrichment"] = True
+    monkeypatch.setattr("inss_db_app.importer.settings", SimpleNamespace(**patched_settings))
+
+    class FakeAddress:
+        cep = "01001000"
+        uf = "SP"
+        cidade = "Sao Paulo"
+        bairro = "Se"
+        logradouro = "Praca da Se"
+        complemento = "lado impar"
+
+    monkeypatch.setattr("inss_db_app.importer.lookup_cep_address", lambda cep: FakeAddress() if cep == "01001000" else None)
+
+    summary = import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[csv_path]),
+    )
+
+    assert summary.files_imported == 1
+    occurrence = session.scalars(select(ClientOccurrence)).one()
+    assert occurrence.cep == "01001000"
+    assert occurrence.uf == "SP"
+    assert occurrence.cidade == "SAO PAULO"
+    assert occurrence.bairro == "SE"
+    assert occurrence.logradouro == "PRACA DA SE"
+
+
+def test_import_preserves_existing_address_when_cep_lookup_returns_data(tmp_path: Path, monkeypatch) -> None:
+    csv_path = tmp_path / "cep_preserve.csv"
+    csv_path.write_text(
+        "CPF;NOME;CEP;UF;CIDADE;LOGRADOURO;TELEFONE1\n"
+        "12345678900;MARIA SILVA;01001000;RJ;NITEROI;RUA JA PREENCHIDA;11999999999\n",
+        encoding="utf-8",
+    )
+    session = make_session()
+
+    patched_settings = dict(vars(settings))
+    patched_settings["enable_cep_enrichment"] = True
+    monkeypatch.setattr("inss_db_app.importer.settings", SimpleNamespace(**patched_settings))
+
+    class FakeAddress:
+        cep = "01001000"
+        uf = "SP"
+        cidade = "Sao Paulo"
+        bairro = "Se"
+        logradouro = "Praca da Se"
+        complemento = ""
+
+    monkeypatch.setattr("inss_db_app.importer.lookup_cep_address", lambda cep: FakeAddress() if cep == "01001000" else None)
+
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[csv_path]),
+    )
+
+    occurrence = session.scalars(select(ClientOccurrence)).one()
+    assert occurrence.uf == "RJ"
+    assert occurrence.cidade == "NITEROI"
+    assert occurrence.logradouro == "RUA JA PREENCHIDA"
+    assert occurrence.bairro == "SE"
+    assert occurrence.complemento == ""
+
+
+def test_import_infers_uf_from_ddd_when_missing(tmp_path: Path, monkeypatch) -> None:
+    csv_path = tmp_path / "ddd_infer.csv"
+    csv_path.write_text(
+        "CPF;NOME;TELEFONE1\n"
+        "12345678900;MARIA SILVA;21999999999\n",
+        encoding="utf-8",
+    )
+    session = make_session()
+
+    patched_settings = dict(vars(settings))
+    patched_settings["enable_ddd_enrichment"] = True
+    monkeypatch.setattr("inss_db_app.importer.settings", SimpleNamespace(**patched_settings))
+
+    class FakeDddInfo:
+        uf = "RJ"
+        cidades = ("Rio de Janeiro", "Niteroi")
+
+    monkeypatch.setattr("inss_db_app.importer.lookup_brasilapi_ddd", lambda ddd: FakeDddInfo() if ddd == "21" else None)
+
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[csv_path]),
+    )
+
+    occurrence = session.scalars(select(ClientOccurrence)).one()
+    assert occurrence.uf == "RJ"
+    assert '"UF_INFERIDA_POR_DDD": "RJ"' in occurrence.extras_json
+
+
+def test_import_registers_regional_alert_when_ddd_disagrees_with_uf(tmp_path: Path, monkeypatch) -> None:
+    csv_path = tmp_path / "ddd_alert.csv"
+    csv_path.write_text(
+        "CPF;NOME;UF;TELEFONE1\n"
+        "12345678900;MARIA SILVA;SP;21999999999\n",
+        encoding="utf-8",
+    )
+    session = make_session()
+
+    patched_settings = dict(vars(settings))
+    patched_settings["enable_ddd_enrichment"] = True
+    monkeypatch.setattr("inss_db_app.importer.settings", SimpleNamespace(**patched_settings))
+
+    class FakeDddInfo:
+        uf = "RJ"
+        cidades = ("Rio de Janeiro",)
+
+    monkeypatch.setattr("inss_db_app.importer.lookup_brasilapi_ddd", lambda ddd: FakeDddInfo() if ddd == "21" else None)
+
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[csv_path]),
+    )
+
+    occurrence = session.scalars(select(ClientOccurrence)).one()
+    assert occurrence.uf == "SP"
+    assert '"ALERTA_REGIONAL": "DDD 21 indica RJ, mas UF informada e SP"' in occurrence.extras_json
+
+
+def test_backfill_missing_addresses_updates_old_occurrences(monkeypatch) -> None:
+    session = make_session()
+    batch = ImportBatch(mes_referencia=8, ano_referencia=2025, origem_pasta="teste", usuario="teste", status="CONCLUIDO")
+    session.add(batch)
+    session.flush()
+    source_file = SourceFile(
+        batch_id=batch.id,
+        nome_arquivo="teste.csv",
+        caminho_arquivo="teste.csv",
+        tipo_arquivo="csv",
+        hash_arquivo="hash-teste",
+        total_linhas=1,
+    )
+    session.add(source_file)
+    session.flush()
+    occurrence = ClientOccurrence(
+        source_file_id=source_file.id,
+        cpf="12345678900",
+        cpf_original="12345678900",
+        nome="MARIA SILVA",
+        nome_higienizado="MARIA SILVA",
+        cep="01001000",
+        telefone1="11999999999",
+        row_hash="abc123",
+    )
+    session.add(occurrence)
+    session.commit()
+
+    patched_settings = dict(vars(settings))
+    patched_settings["enable_cep_enrichment"] = True
+    patched_settings["enable_ddd_enrichment"] = True
+    patched_settings["startup_address_backfill_batch_size"] = 100
+    monkeypatch.setattr("inss_db_app.importer.settings", SimpleNamespace(**patched_settings))
+
+    class FakeAddress:
+        cep = "01001000"
+        uf = "SP"
+        cidade = "Sao Paulo"
+        bairro = "Se"
+        logradouro = "Praca da Se"
+        complemento = ""
+
+    monkeypatch.setattr("inss_db_app.importer.lookup_cep_address", lambda cep: FakeAddress() if cep == "01001000" else None)
+    monkeypatch.setattr("inss_db_app.importer.lookup_brasilapi_ddd", lambda ddd: None)
+
+    summary = backfill_missing_addresses(session)
+
+    updated = session.get(ClientOccurrence, occurrence.id)
+    assert summary.scanned_rows == 1
+    assert summary.updated_rows == 1
+    assert updated is not None
+    assert updated.uf == "SP"
+    assert updated.cidade == "SAO PAULO"
+    assert updated.logradouro == "PRACA DA SE"
+
+
+def test_backfill_missing_addresses_infers_uf_from_ddd_without_cep(monkeypatch) -> None:
+    session = make_session()
+    batch = ImportBatch(mes_referencia=8, ano_referencia=2025, origem_pasta="teste", usuario="teste", status="CONCLUIDO")
+    session.add(batch)
+    session.flush()
+    source_file = SourceFile(
+        batch_id=batch.id,
+        nome_arquivo="teste.csv",
+        caminho_arquivo="teste.csv",
+        tipo_arquivo="csv",
+        hash_arquivo="hash-teste-ddd",
+        total_linhas=1,
+    )
+    session.add(source_file)
+    session.flush()
+    occurrence = ClientOccurrence(
+        source_file_id=source_file.id,
+        cpf="99988877766",
+        cpf_original="99988877766",
+        nome="ANA LIMA",
+        nome_higienizado="ANA LIMA",
+        telefone1="21999999999",
+        row_hash="ddd-only",
+    )
+    session.add(occurrence)
+    session.commit()
+
+    patched_settings = dict(vars(settings))
+    patched_settings["enable_cep_enrichment"] = True
+    patched_settings["enable_ddd_enrichment"] = True
+    patched_settings["startup_address_backfill_batch_size"] = 100
+    monkeypatch.setattr("inss_db_app.importer.settings", SimpleNamespace(**patched_settings))
+
+    class FakeDddInfo:
+        uf = "RJ"
+        cidades = ("Rio de Janeiro",)
+
+    monkeypatch.setattr("inss_db_app.importer.lookup_cep_address", lambda cep: None)
+    monkeypatch.setattr("inss_db_app.importer.lookup_brasilapi_ddd", lambda ddd: FakeDddInfo() if ddd == "21" else None)
+
+    summary = backfill_missing_addresses(session)
+
+    updated = session.get(ClientOccurrence, occurrence.id)
+    assert summary.scanned_rows == 1
+    assert summary.updated_rows == 1
+    assert updated is not None
+    assert updated.uf == "RJ"
+    assert '"UF_INFERIDA_POR_DDD": "RJ"' in updated.extras_json
 
 
 def test_normalize_date_text_accepts_datetime_strings() -> None:
@@ -418,6 +659,30 @@ def test_export_clients(tmp_path: Path) -> None:
     assert "MARIA SILVA" in content
 
 
+def test_export_clients_falls_back_to_consolidated_uf_and_city(tmp_path: Path) -> None:
+    csv_path = tmp_path / "export_consolidated_fallback.csv"
+    csv_path.write_text(
+        "CPF;NOME;NU-NB;ESP;DDB;VL-RMI;VL MARGEM;TELEFONE1\n"
+        "12345678900;MARIA SILVA;111;21;21/01/2026;R$ 100,00;R$ 50,00;93991859770\n",
+        encoding="utf-8",
+    )
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[csv_path]),
+    )
+    client = session.get(Client, "12345678900")
+    assert client is not None
+    client.uf_atual = "PA"
+    client.cidade_atual = "SANTAREM"
+    session.commit()
+
+    export_path = export_clients(session, FilterSet(), include_audit=False)
+    content = export_path.read_text(encoding="utf-8-sig")
+    assert "PA" in content
+    assert "SANTAREM" in content
+
+
 def test_export_clients_uses_first_phone_with_ddd_filter(tmp_path: Path) -> None:
     csv_path = tmp_path / "export_ddd.csv"
     csv_path.write_text(
@@ -471,6 +736,37 @@ def test_export_clients_xlsx(tmp_path: Path) -> None:
     export_path = export_clients(session, FilterSet(uf="SP"), include_audit=False, file_format="xlsx")
     assert export_path.exists()
     assert export_path.suffix == ".xlsx"
+
+
+def test_export_updated_clients_keeps_benefit_fields_from_latest_inss_occurrence(tmp_path: Path) -> None:
+    old_csv = tmp_path / "benefit_old.csv"
+    old_csv.write_text(
+        "CPF;NOME;NU-NB;ESP;DDB;VL-RMI;VL MARGEM;VL RMC;UF;CIDADE;TELEFONE1\n"
+        "12345678900;MARIA SILVA;111;31;10/01/2026;R$ 1000,00;R$ 50,00;R$ 10,00;SP;SAO PAULO;11999999999\n",
+        encoding="utf-8",
+    )
+    new_csv = tmp_path / "benefit_new.csv"
+    new_csv.write_text(
+        "CPF;NOME;NU-NB;ESP;DDB;VL-RMI;VL MARGEM;VL RMC;UF;CIDADE;TELEFONE1\n"
+        "12345678900;MARIA SILVA;222;32;15/02/2026;R$ 2000,00;R$ 90,00;R$ 20,00;RJ;RIO DE JANEIRO;\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(session, ImportRequest(year=2026, month=1, user_name="teste", origin_folder=str(tmp_path), files=[old_csv]))
+    import_files(session, ImportRequest(year=2026, month=2, user_name="teste", origin_folder=str(tmp_path), files=[new_csv]))
+
+    export_path = export_updated_clients(session, FilterSet(), file_format="csv")
+    content = export_path.read_text(encoding="utf-8-sig")
+
+    assert "12345678900" in content
+    assert "222" in content
+    assert "32" in content
+    assert "15/02/2026" in content
+    assert "R$ 90,00" in content
+    assert "R$ 20,00" in content
+    assert "11999999999" in content
+    assert "RIO DE JANEIRO" in content
 
 
 def test_export_updated_clients_from_latest_enrichment_uses_last_return(tmp_path: Path) -> None:
@@ -924,6 +1220,38 @@ def test_query_clients_public_exposes_personal_and_functional_fields(tmp_path: P
     assert rows[0]["tipo_vinculo"] == "EFETIVO"
     assert rows[0]["cargo_funcao"] == "ANALISTA"
     assert rows[0]["data_admissao"] == "10/01/2020"
+
+
+def test_import_files_prefeitura_salvador_titles_are_mapped(tmp_path: Path) -> None:
+    csv_path = tmp_path / "prefeitura_salvador.csv"
+    csv_path.write_text(
+        "CPF;NOME_COMPLETO;ENDEREÇO;NUMERO;BAIRRO;CIDADE;UF;CEP;CATEGORIA;DT_ADMISSAO;AGEN_BCO_COD;AGEN_COD;CTA_PAG\n"
+        "12345678900;MARIA TESTE;RUA A;45;CENTRO;SALVADOR;BA;40000000;EFETIVO;2020-01-10 00:00:00;001;1234;998877\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[csv_path], base_segment="PREFEITURA", base_source="SALVADOR"),
+    )
+
+    rows = query_clients(session, FilterSet(base_segment="PREFEITURA", cpf="12345678900"))
+    assert len(rows) == 1
+    assert rows[0]["nome"] == "MARIA TESTE"
+    assert rows[0]["logradouro"] == "RUA A"
+    assert rows[0]["numero"] == "45"
+    assert rows[0]["bairro"] == "CENTRO"
+    assert rows[0]["cidade"] == "SALVADOR"
+    assert rows[0]["uf"] == "BA"
+    assert rows[0]["cep"] == "40000000"
+    assert rows[0]["tipo_vinculo"] == "EFETIVO"
+    assert rows[0]["data_admissao"] == "10/01/2020"
+
+    occurrence = session.scalars(select(ClientOccurrence).where(ClientOccurrence.cpf == "12345678900")).one()
+    assert '"AGEN_BCO_COD": "001"' in occurrence.extras_json
+    assert '"AGEN_COD": "1234"' in occurrence.extras_json
+    assert '"CTA_PAG": "998877"' in occurrence.extras_json
 
 
 def test_query_clients_public_fills_all_missing_fields_from_same_cpf_group(tmp_path: Path) -> None:
