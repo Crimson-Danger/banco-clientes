@@ -172,6 +172,20 @@ class ExportJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class ImportJob(Base):
+    __tablename__ = "import_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("import_batches.id"), nullable=False, index=True)
+    requested_by: Mapped[str] = mapped_column(String(120), nullable=False, default="operador", index=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="PENDENTE", index=True)
+    request_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC), nullable=False, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class PhoneEnrichment(Base):
     __tablename__ = "phone_enrichments"
     __table_args__ = (UniqueConstraint("cpf", "telefone", "fonte", name="uq_phone_enrichment_unique"),)

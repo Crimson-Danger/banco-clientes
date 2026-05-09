@@ -6,9 +6,11 @@ import io
 import json
 import hashlib
 import hmac
+import logging
 import mimetypes
 from pathlib import Path
 import threading
+import time
 import traceback
 from types import SimpleNamespace
 from urllib.parse import urlencode
@@ -17,10 +19,10 @@ from datetime import UTC, datetime
 import re
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, inspect, or_, select
 from sqlalchemy.orm import Session
 from openpyxl import load_workbook
 
@@ -48,7 +50,7 @@ from .importer import (
     query_clients,
     save_uploaded_files,
 )
-from .models import AppUser, AuditLog, Client, ClientOccurrence, ExportHistory, ExportJob, ImportBatch, PhoneEnrichment, PublicCampaignUpdate, SavedFilter, SourceFile
+from .models import AppUser, AuditLog, Client, ClientOccurrence, ExportHistory, ExportJob, ImportBatch, ImportJob, PhoneEnrichment, PublicCampaignUpdate, SavedFilter, SourceFile
 from .schemas import ImportRequest
 
 
@@ -71,6 +73,51 @@ BASE_SEGMENT_OPTIONS = [
 ]
 CLIENTS_PAGE_SIZE = 25
 HISTORY_PAGE_SIZE = 20
+QUEUE_POLL_SECONDS = 2.0
+logger = logging.getLogger("inss_db_app")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+
+class MetricsRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counters: dict[str, float] = {}
+        self._durations: dict[str, tuple[int, float]] = {}
+
+    def inc(self, key: str, value: float = 1.0) -> None:
+        with self._lock:
+            self._counters[key] = self._counters.get(key, 0.0) + value
+
+    def observe(self, key: str, seconds: float) -> None:
+        with self._lock:
+            count, total = self._durations.get(key, (0, 0.0))
+            self._durations[key] = (count + 1, total + max(0.0, seconds))
+
+    def render_prometheus(self, session: Session) -> str:
+        lines: list[str] = []
+        with self._lock:
+            counters = dict(self._counters)
+            durations = dict(self._durations)
+        for key in sorted(counters):
+            lines.append(f'{key} {counters[key]}')
+        for key in sorted(durations):
+            count, total = durations[key]
+            lines.append(f'{key}_count {count}')
+            lines.append(f'{key}_sum {total:.6f}')
+
+        export_pending = session.scalar(select(func.count()).select_from(ExportJob).where(ExportJob.status == "PENDENTE")) or 0
+        export_running = session.scalar(select(func.count()).select_from(ExportJob).where(ExportJob.status == "PROCESSANDO")) or 0
+        import_pending = session.scalar(select(func.count()).select_from(ImportJob).where(ImportJob.status == "PENDENTE")) or 0
+        import_running = session.scalar(select(func.count()).select_from(ImportJob).where(ImportJob.status == "PROCESSANDO")) or 0
+        lines.append(f"inss_export_jobs_pending {export_pending}")
+        lines.append(f"inss_export_jobs_processing {export_running}")
+        lines.append(f"inss_import_jobs_pending {import_pending}")
+        lines.append(f"inss_import_jobs_processing {import_running}")
+        return "\n".join(lines) + "\n"
+
+
+metrics = MetricsRegistry()
 
 
 def format_reference(value: str) -> str:
@@ -300,12 +347,62 @@ def enqueue_export_job(
         metadata=metadata or {},
     )
     session.commit()
-    threading.Thread(target=run_export_job, args=(job.id,), daemon=True).start()
+    return job
+
+
+def serialize_import_request(request_data: ImportRequest) -> str:
+    payload = {
+        "year": request_data.year,
+        "month": request_data.month,
+        "user_name": request_data.user_name,
+        "origin_folder": request_data.origin_folder,
+        "files": [str(path) for path in request_data.files],
+        "base_segment": request_data.base_segment,
+        "base_source": request_data.base_source,
+        "allowed_species": request_data.allowed_species,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def deserialize_import_request(payload: str) -> ImportRequest:
+    data = json.loads(payload or "{}")
+    return ImportRequest(
+        year=int(data.get("year", 0)),
+        month=int(data.get("month", 0)),
+        user_name=str(data.get("user_name", "operador")),
+        origin_folder=str(data.get("origin_folder", "upload_web")),
+        files=[Path(str(path)) for path in data.get("files", [])],
+        base_segment=str(data.get("base_segment", "INSS")),
+        base_source=str(data.get("base_source", "")),
+        allowed_species=[str(item) for item in data.get("allowed_species", [])],
+    )
+
+
+def enqueue_import_job(session: Session, batch_id: int, request_data: ImportRequest, requested_by: str) -> ImportJob:
+    job = ImportJob(
+        batch_id=batch_id,
+        requested_by=requested_by,
+        status="PENDENTE",
+        request_json=serialize_import_request(request_data),
+    )
+    session.add(job)
+    session.flush()
+    log_audit(
+        session,
+        requested_by,
+        "import_job_created",
+        target_type="import_job",
+        target_id=str(job.id),
+        message="Importacao colocada em fila persistente.",
+        metadata={"batch_id": batch_id},
+    )
+    session.commit()
     return job
 
 
 def run_export_job(job_id: int) -> None:
     session = SessionLocal()
+    started = time.perf_counter()
     try:
         job = session.get(ExportJob, job_id)
         if job is None:
@@ -348,6 +445,7 @@ def run_export_job(job_id: int) -> None:
             metadata={"arquivo": export_path.name, "registros": job.total_records, "job_type": job.job_type},
         )
         session.commit()
+        metrics.inc("inss_export_jobs_completed_total")
     except Exception as exc:
         session.rollback()
         failed_job = session.get(ExportJob, job_id)
@@ -357,7 +455,9 @@ def run_export_job(job_id: int) -> None:
             failed_job.finished_at = current_utc()
             log_audit(session, failed_job.requested_by, "export_job_failed", target_type="export_job", target_id=str(failed_job.id), message="Falha na exportacao assincrona.", metadata={"erro": str(exc)})
             session.commit()
+        metrics.inc("inss_export_jobs_failed_total")
     finally:
+        metrics.observe("inss_export_job_duration_seconds", time.perf_counter() - started)
         session.close()
 
 
@@ -551,6 +651,7 @@ def ensure_default_admin() -> None:
 
 def run_import_job(batch_id: int, request_data: ImportRequest) -> None:
     session = SessionLocal()
+    started = time.perf_counter()
     try:
         batch = session.get(ImportBatch, batch_id)
         if batch is None:
@@ -564,6 +665,7 @@ def run_import_job(batch_id: int, request_data: ImportRequest) -> None:
             message="Importacao concluida.",
             metadata={"rows_imported": summary.rows_imported, "files_imported": summary.files_imported},
         )
+        metrics.inc("inss_import_batches_completed_total")
     except Exception as exc:
         traceback.print_exc()
         log_audit_with_new_session(
@@ -574,8 +676,99 @@ def run_import_job(batch_id: int, request_data: ImportRequest) -> None:
             message="Falha na importacao.",
             metadata={"erro": str(exc), "traceback": traceback.format_exc(limit=20)},
         )
+        metrics.inc("inss_import_batches_failed_total")
+        raise
+    finally:
+        metrics.observe("inss_import_batch_duration_seconds", time.perf_counter() - started)
+        session.close()
+
+
+def process_next_export_job() -> bool:
+    session = SessionLocal()
+    try:
+        job = session.execute(select(ExportJob).where(ExportJob.status == "PENDENTE").order_by(ExportJob.created_at.asc())).scalars().first()
+        if job is None:
+            return False
+        job.status = "PROCESSANDO"
+        job.started_at = current_utc()
+        session.commit()
+        run_export_job(job.id)
+        return True
     finally:
         session.close()
+
+
+def process_next_import_job() -> bool:
+    session = SessionLocal()
+    try:
+        if not inspect(engine).has_table("import_jobs"):
+            return False
+        job = session.execute(select(ImportJob).where(ImportJob.status == "PENDENTE").order_by(ImportJob.created_at.asc())).scalars().first()
+        if job is None:
+            return False
+        job.status = "PROCESSANDO"
+        job.started_at = current_utc()
+        session.commit()
+        request_data = deserialize_import_request(job.request_json)
+        try:
+            run_import_job(job.batch_id, request_data)
+            completed = session.get(ImportJob, job.id)
+            if completed is not None:
+                completed.status = "CONCLUIDO"
+                completed.finished_at = current_utc()
+                session.commit()
+                metrics.inc("inss_import_jobs_completed_total")
+        except Exception as exc:
+            session.rollback()
+            failed = session.get(ImportJob, job.id)
+            if failed is not None:
+                failed.status = "ERRO"
+                failed.error_message = str(exc)
+                failed.finished_at = current_utc()
+                session.commit()
+            metrics.inc("inss_import_jobs_failed_total")
+        return True
+    finally:
+        session.close()
+
+
+def revive_stuck_jobs() -> None:
+    session = SessionLocal()
+    try:
+        now = current_utc()
+        if inspect(engine).has_table("export_jobs"):
+            session.execute(
+                ExportJob.__table__.update()
+                .where(ExportJob.status == "PROCESSANDO")
+                .values(status="PENDENTE", started_at=None, finished_at=None, error_message="Reenfileirado apos reinicio do servidor.")
+            )
+        if inspect(engine).has_table("import_jobs"):
+            session.execute(
+                ImportJob.__table__.update()
+                .where(ImportJob.status == "PROCESSANDO")
+                .values(status="PENDENTE", started_at=None, finished_at=None, error_message="Reenfileirado apos reinicio do servidor.")
+            )
+        stale_batches = session.execute(select(ImportBatch).where(ImportBatch.status == "PROCESSANDO")).scalars().all()
+        for batch in stale_batches:
+            batch.status = "PENDENTE"
+            batch.resumo = f"{batch.resumo}\nReenfileirado em {now.isoformat()} apos reinicio do servidor.".strip()
+        session.commit()
+    finally:
+        session.close()
+
+
+def queue_worker_loop() -> None:
+    while True:
+        did_work = False
+        start = time.perf_counter()
+        try:
+            did_work = process_next_export_job() or did_work
+            did_work = process_next_import_job() or did_work
+        except Exception as exc:
+            logger.info(json.dumps({"event": "queue_worker_error", "error": str(exc)}, ensure_ascii=False))
+        metrics.observe("inss_queue_cycle_duration_seconds", time.perf_counter() - start)
+        if not did_work:
+            time.sleep(QUEUE_POLL_SECONDS)
 
 
 def create_schema() -> None:
@@ -634,6 +827,8 @@ async def lifespan(_: FastAPI):
         print("Startup maintenance: schema validated")
     if settings.enable_startup_address_backfill:
         threading.Thread(target=run_startup_address_backfill, daemon=True).start()
+    revive_stuck_jobs()
+    threading.Thread(target=queue_worker_loop, daemon=True).start()
     yield
 
 
@@ -643,6 +838,7 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 
 @app.middleware("http")
 async def attach_current_user(request: Request, call_next):
+    started = time.perf_counter()
     request.state.current_user = None
     user_id = parse_auth_token(request.cookies.get(AUTH_COOKIE_NAME, ""))
     if user_id:
@@ -654,6 +850,26 @@ async def attach_current_user(request: Request, call_next):
         finally:
             session.close()
     response = await call_next(request)
+    elapsed = time.perf_counter() - started
+    user = getattr(request.state, "current_user", None)
+    path = request.url.path
+    method = request.method.upper()
+    status_code = getattr(response, "status_code", 500)
+    metrics.inc(f'inss_http_requests_total{{method="{method}",path="{path}",status="{status_code}"}}')
+    metrics.observe(f'inss_http_request_duration_seconds{{method="{method}",path="{path}"}}', elapsed)
+    logger.info(
+        json.dumps(
+            {
+                "event": "http_request",
+                "method": method,
+                "path": path,
+                "status": status_code,
+                "duration_ms": round(elapsed * 1000, 2),
+                "user": getattr(user, "username", None),
+            },
+            ensure_ascii=False,
+        )
+    )
     return response
 
 
@@ -1748,8 +1964,7 @@ async def run_import(
         message="Importacao iniciada.",
         metadata={"segmento": normalized_segment, "fonte": base_source, "arquivos": [path.name for path in selected_paths]},
     )
-    session.commit()
-    threading.Thread(target=run_import_job, args=(batch.id, import_request), daemon=True).start()
+    enqueue_import_job(session, batch_id=batch.id, request_data=import_request, requested_by=current_user.username)
     return RedirectResponse(url=f"/history/{batch.id}", status_code=303)
 
 
@@ -3032,6 +3247,11 @@ def healthcheck(session: Session = Depends(get_session)) -> JSONResponse:
         db_ok = False
     payload = {"status": "ok" if db_ok else "degraded", "database": "ok" if db_ok else "error"}
     return JSONResponse(payload, status_code=200 if db_ok else 503)
+
+
+@app.get("/metrics")
+def metrics_endpoint(session: Session = Depends(get_session)) -> PlainTextResponse:
+    return PlainTextResponse(metrics.render_prometheus(session), media_type="text/plain; version=0.0.4")
 
 
 @app.get("/api/c6/worker-loan/health")
