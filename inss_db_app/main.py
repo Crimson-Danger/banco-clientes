@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from urllib.parse import urlencode
 from urllib.parse import quote_plus
 from datetime import UTC, datetime
+import re
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -399,6 +400,32 @@ def _first_extra_value(extras: dict[str, object], *keys: str) -> str:
     return ""
 
 
+SPECIES_MEANINGS: dict[str, str] = {
+    "21": "Pensao por morte previdenciaria",
+    "41": "Aposentadoria por idade",
+    "42": "Aposentadoria por tempo de contribuicao",
+    "46": "Aposentadoria especial",
+    "31": "Auxilio doenca previdenciario",
+    "32": "Aposentadoria por invalidez previdenciaria",
+    "87": "Amparo assistencial ao idoso (LOAS/BPC)",
+    "88": "Amparo assistencial a pessoa com deficiencia (LOAS/BPC)",
+}
+
+
+def get_species_meaning(raw_species: str) -> str:
+    text = _norm_text(raw_species)
+    if not text:
+        return ""
+    code = "".join(char for char in text if char.isdigit())[:2]
+    if code in SPECIES_MEANINGS:
+        return SPECIES_MEANINGS[code]
+    if "-" in text:
+        right = text.split("-", 1)[1].strip()
+        if right:
+            return right
+    return ""
+
+
 def _build_public_filter_options(session: Session, base_segment: str, base_source: str) -> dict[str, list[str]]:
     options = {
         "entidades": [],
@@ -647,7 +674,7 @@ async def forbidden_handler(request: Request, _exc: HTTPException):
 
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, next: str = "/") -> HTMLResponse:
+def login_page(request: Request, next: str = "/clients") -> HTMLResponse:
     if getattr(request.state, "current_user", None):
         return RedirectResponse(url=safe_next_path(next), status_code=303)
     return render_template(request, "login.html", {"error": "", "next": safe_next_path(next), "title": "Login"})
@@ -658,7 +685,7 @@ def login_submit(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    next: str = Form("/"),
+    next: str = Form("/clients"),
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
     user = session.scalar(select(AppUser).where(AppUser.username == username.strip()))
@@ -853,6 +880,684 @@ async def clt_consulta_lote_planilha(
         "resultados": resultados,
     }
     return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": result, "error": ""})
+
+
+@app.get("/c6-worker", response_class=HTMLResponse)
+def c6_worker_page(
+    request: Request,
+    _current_user: AppUser = Depends(require_permission("can_search")),
+) -> HTMLResponse:
+    defaults = {
+        "worker_cpf": "",
+        "auth_nome": "",
+        "auth_data_nascimento": "",
+        "auth_ddd": "",
+        "auth_numero_telefone": "",
+        "simulation_type": "POR_VALOR_MAXIMO",
+        "simulation_prazo": "24",
+        "simulation_installment_value": "",
+        "simulation_requested_amount": "",
+        "simulation_version": "v2",
+        "include_id_simulacao": "",
+        "include_ddd": "",
+        "include_numero_telefone": "",
+        "include_logradouro": "",
+        "include_numero": "",
+        "include_cep": "",
+        "include_bairro": "",
+        "include_cidade": "",
+        "include_uf": "",
+        "include_codigo_origem_6": "",
+        "include_numero_cpf_certificado": "",
+        "include_tipo_conta": "ContaCorrenteIndividual",
+        "include_numero_banco": "",
+        "include_numero_agencia": "",
+        "include_digito_agencia": "",
+        "include_numero_conta": "",
+        "include_digito_conta": "",
+    }
+    return render_template(
+        request,
+        "c6_worker.html",
+        {
+            "title": "Consignado Trabalhador C6",
+            "result": None,
+            "error": "",
+            "active_action": "offer",
+            **defaults,
+        },
+    )
+
+
+@app.get("/c6")
+def c6_entry(
+    produto: str = "inss",
+    _current_user: AppUser = Depends(require_permission("can_search")),
+) -> RedirectResponse:
+    destino = "/c6-worker" if (produto or "").strip().lower() in {"trabalhador", "worker"} else "/c6-inss"
+    return RedirectResponse(url=destino, status_code=302)
+
+
+@app.get("/c6-inss", response_class=HTMLResponse)
+def c6_inss_page(
+    request: Request,
+    _current_user: AppUser = Depends(require_permission("can_search")),
+) -> HTMLResponse:
+    return render_template(
+        request,
+        "c6_inss.html",
+        {
+            "title": "Consignado Tradicional INSS C6",
+            "result": None,
+            "error": "",
+            "active_action": "simulation",
+            "tax_identifier": "",
+            "enrollment": "",
+            "birth_date": "",
+            "income_amount": "4000",
+            "requested_amount": "3000",
+            "installment_amount": "",
+            "installment_quantity": "84",
+            "simulation_type": "POR_VALOR_SOLICITADO",
+            "operation_type": "NOVA",
+            "product_type_code": "0001",
+            "formalization_subtype": "DIGITAL_WEB",
+            "promoter_code": "003238",
+            "covenant_group": "INSS",
+            "public_agency": "000001",
+            "bank_code": "",
+            "agency_number": "",
+            "agency_digit": "",
+            "account_type": "01",
+            "account_number": "",
+            "account_digit": "",
+            "account_holder_name": "",
+            "account_holder_tax_identifier": "",
+        },
+    )
+
+
+@app.post("/c6-inss", response_class=HTMLResponse)
+def c6_inss_submit(
+    request: Request,
+    tax_identifier: str = Form(""),
+    enrollment: str = Form(""),
+    birth_date: str = Form(""),
+    income_amount: str = Form(""),
+    requested_amount: str = Form(""),
+    installment_amount: str = Form(""),
+    installment_quantity: str = Form(""),
+    simulation_type: str = Form("POR_VALOR_SOLICITADO"),
+    operation_type: str = Form("NOVA"),
+    product_type_code: str = Form("0001"),
+    formalization_subtype: str = Form("DIGITAL_WEB"),
+    promoter_code: str = Form("003238"),
+    covenant_group: str = Form("INSS"),
+    public_agency: str = Form("000001"),
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    def to_float(value: str, field_name: str) -> float:
+        raw = (value or "").strip()
+        if not raw:
+            return 0.0
+        # Aceita formatos como 1518, 1518.00, 1.518,00 e 1,518.00
+        if "," in raw and "." in raw:
+            if raw.rfind(",") > raw.rfind("."):
+                raw = raw.replace(".", "").replace(",", ".")
+            else:
+                raw = raw.replace(",", "")
+        elif "," in raw:
+            raw = raw.replace(".", "").replace(",", ".")
+        try:
+            return float(raw)
+        except ValueError as exc:
+            raise ValueError(f"Valor invalido para {field_name}: {value}") from exc
+
+    def to_int(value: str, field_name: str) -> int:
+        raw = "".join(ch for ch in (value or "") if ch.isdigit())
+        if not raw:
+            return 0
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise ValueError(f"Valor invalido para {field_name}: {value}") from exc
+
+    def to_birth_date(value: str) -> str:
+        raw = (value or "").strip()
+        if not raw:
+            raise ValueError("Data de nascimento obrigatoria.")
+        parsed_date: datetime | None = None
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+            normalized = raw
+        elif re.fullmatch(r"\d{2}/\d{2}/\d{4}", raw):
+            day, month, year = raw.split("/")
+            normalized = f"{year}-{month}-{day}"
+        else:
+            raise ValueError("Data de nascimento invalida. Use dd/mm/aaaa ou aaaa-mm-dd.")
+        try:
+            parsed_date = datetime.strptime(normalized, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("Data de nascimento invalida.") from exc
+        if parsed_date.date() > datetime.now().date():
+            raise ValueError("Data de nascimento nao pode ser futura.")
+        return normalized
+
+    def to_money_br(value: object) -> str:
+        number = float(value or 0)
+        return f"{number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    error = ""
+    result: dict[str, object] | None = None
+    simulation_conditions: list[dict[str, object]] = []
+    continue_url = ""
+    try:
+        simulation_type_normalized = simulation_type.strip().upper()
+        payload: dict[str, object] = {
+            "operation_type": operation_type.strip(),
+            "product_type_code": product_type_code.strip(),
+            "simulation_type": simulation_type_normalized,
+            "formalization_subtype": formalization_subtype.strip(),
+            "promoter_code": promoter_code.strip().zfill(6),
+            "covenant_group": covenant_group.strip(),
+            "public_agency": public_agency.strip(),
+            "installment_quantity": to_int(installment_quantity, "installment_quantity"),
+            "client": {
+                "tax_identifier": tax_identifier.strip(),
+                "enrollment": enrollment.strip(),
+                "birth_date": to_birth_date(birth_date),
+                "income_amount": to_float(income_amount, "income_amount"),
+            },
+        }
+        if simulation_type_normalized == "POR_VALOR_PARCELA":
+            payload["installment_amount"] = to_float(installment_amount, "installment_amount")
+        else:
+            payload["requested_amount"] = to_float(requested_amount, "requested_amount")
+    except ValueError as exc:
+        payload = {}
+        error = str(exc)
+    if not error:
+        if not payload["client"]["tax_identifier"]:
+            error = "CPF do cliente e obrigatorio."
+        elif len(payload["client"]["enrollment"]) != 10:
+            error = "Matricula deve conter exatamente 10 caracteres."
+        elif payload.get("simulation_type") == "POR_VALOR_PARCELA" and float(payload.get("installment_amount", 0) or 0) <= 0:
+            error = "Informe um valor da parcela valido."
+        elif payload.get("simulation_type") != "POR_VALOR_PARCELA" and float(payload.get("requested_amount", 0) or 0) <= 0:
+            error = "Informe um valor solicitado valido."
+
+    if not error:
+        try:
+            response = c6_worker_loan_client.simulate_inss_proposal(payload)
+            action_name = "c6_inss_simulation_requested"
+            result = {"status_code": response.status_code, "data": response.payload, "action": "simulation", "payload_enviado": payload}
+            for item in (response.payload or {}).get("credit_conditions", []):
+                covenant = item.get("covenant", {}) if isinstance(item, dict) else {}
+                observation = covenant.get("observation", "")
+                installment_amount_value = item.get("installment_amount", 0) if isinstance(item, dict) else 0
+                row = {
+                    "covenant_code": covenant.get("code", ""),
+                    "covenant_description": covenant.get("description", ""),
+                    "observation": observation,
+                    "requested_amount": item.get("requested_amount", 0),
+                    "installment_amount": installment_amount_value,
+                    "installment_quantity": item.get("installment_quantity", 0),
+                    "client_amount": item.get("client_amount", 0),
+                    "monthly_customer_rate": item.get("monthly_customer_rate", 0),
+                    "product_code": (item.get("product", {}) or {}).get("code", "") if isinstance(item, dict) else "",
+                    "product_description": (item.get("product", {}) or {}).get("description", "") if isinstance(item, dict) else "",
+                    "is_valid": not observation and float(item.get("requested_amount", 0) or 0) > 0 and float(installment_amount_value or 0) > 0,
+                }
+                if row["is_valid"]:
+                    requested_amount_for_include = row["requested_amount"]
+                    if simulation_type_normalized == "POR_VALOR_PARCELA":
+                        requested_amount_for_include = row["client_amount"] or row["requested_amount"]
+                    row["select_url"] = "/c6-inss/include?" + urlencode(
+                        {
+                            "tax_identifier": tax_identifier,
+                            "enrollment": enrollment,
+                            "birth_date": birth_date,
+                            "income_amount": income_amount,
+                            "requested_amount": to_money_br(requested_amount_for_include),
+                            "installment_amount": installment_amount_value,
+                            "installment_quantity": str(row["installment_quantity"]),
+                            "simulation_type": simulation_type,
+                            "operation_type": operation_type,
+                            "product_type_code": product_type_code,
+                            "formalization_subtype": formalization_subtype,
+                            "promoter_code": promoter_code,
+                            "covenant_group": covenant_group,
+                            "public_agency": public_agency,
+                            "selected_covenant_code": row["covenant_code"],
+                            "selected_covenant_description": row["covenant_description"],
+                            "selected_product_code": row["product_code"],
+                            "selected_product_description": row["product_description"],
+                            "selected_installment_amount": str(row["installment_amount"]),
+                            "selected_monthly_rate": str(row["monthly_customer_rate"]),
+                        }
+                    )
+                simulation_conditions.append(row)
+            simulation_conditions.sort(key=lambda row: (not bool(row["is_valid"]), float(row["installment_amount"] or 0)))
+            requested_amount_for_continue = requested_amount
+            if simulation_type_normalized == "POR_VALOR_PARCELA":
+                first_valid = next((row for row in simulation_conditions if row.get("is_valid")), None)
+                if first_valid is not None:
+                    requested_amount_for_continue = to_money_br(first_valid.get("client_amount") or requested_amount)
+            continue_url = "/c6-inss/include?" + urlencode(
+                {
+                    "tax_identifier": tax_identifier,
+                    "enrollment": enrollment,
+                    "birth_date": birth_date,
+                    "income_amount": income_amount,
+                    "requested_amount": requested_amount_for_continue,
+                    "installment_amount": installment_amount,
+                    "installment_quantity": installment_quantity,
+                    "simulation_type": simulation_type,
+                    "operation_type": operation_type,
+                    "product_type_code": product_type_code,
+                    "formalization_subtype": formalization_subtype,
+                    "promoter_code": promoter_code,
+                    "covenant_group": covenant_group,
+                    "public_agency": public_agency,
+                }
+            )
+            log_audit(
+                session,
+                current_user.username,
+                action_name,
+                target_type="integration",
+                message="Operacao C6 INSS executada pela tela de consignado tradicional.",
+                metadata={"path": str(request.url.path), "action": "simulation"},
+            )
+            session.commit()
+        except C6WorkerLoanError as exc:
+            error = f"{exc}\nPayload enviado: {json.dumps(payload, ensure_ascii=False)}"
+
+    return render_template(
+        request,
+        "c6_inss.html",
+        {
+            "title": "Consignado Tradicional INSS C6",
+            "result": result,
+            "error": error,
+            "active_action": "simulation",
+            "simulation_conditions": simulation_conditions,
+            "continue_url": continue_url,
+            "tax_identifier": tax_identifier,
+            "enrollment": enrollment,
+            "birth_date": birth_date,
+            "income_amount": income_amount,
+            "requested_amount": requested_amount,
+            "installment_amount": installment_amount,
+            "installment_quantity": installment_quantity,
+            "simulation_type": simulation_type,
+            "operation_type": operation_type,
+            "product_type_code": product_type_code,
+            "formalization_subtype": formalization_subtype,
+            "promoter_code": promoter_code.strip().zfill(6),
+            "covenant_group": covenant_group,
+            "public_agency": public_agency,
+        },
+        status_code=400 if error else 200,
+    )
+
+
+@app.get("/c6-inss/include", response_class=HTMLResponse)
+def c6_inss_include_page(
+    request: Request,
+    _current_user: AppUser = Depends(require_permission("can_search")),
+) -> HTMLResponse:
+    q = request.query_params
+    return render_template(
+        request,
+        "c6_inss_include.html",
+        {
+            "title": "Inclusao Proposta INSS C6",
+            "result": None,
+            "error": "",
+            "tax_identifier": q.get("tax_identifier", ""),
+            "enrollment": q.get("enrollment", ""),
+            "birth_date": q.get("birth_date", ""),
+            "income_amount": q.get("income_amount", ""),
+            "requested_amount": q.get("requested_amount", ""),
+            "installment_quantity": q.get("installment_quantity", ""),
+            "simulation_type": q.get("simulation_type", "POR_VALOR_SOLICITADO"),
+            "operation_type": q.get("operation_type", "NOVA"),
+            "product_type_code": q.get("product_type_code", "0001"),
+            "formalization_subtype": q.get("formalization_subtype", "DIGITAL_WEB"),
+            "promoter_code": q.get("promoter_code", "003238"),
+            "covenant_group": q.get("covenant_group", "INSS"),
+            "public_agency": q.get("public_agency", "000001"),
+            "bank_code": "",
+            "agency_number": "",
+            "agency_digit": "",
+            "account_type": "01",
+            "account_number": "",
+            "account_digit": "",
+            "account_holder_name": "",
+            "account_holder_tax_identifier": "",
+            "selected_covenant_code": q.get("selected_covenant_code", ""),
+            "selected_covenant_description": q.get("selected_covenant_description", ""),
+            "selected_product_code": q.get("selected_product_code", ""),
+            "selected_product_description": q.get("selected_product_description", ""),
+            "selected_installment_amount": q.get("selected_installment_amount", ""),
+            "selected_monthly_rate": q.get("selected_monthly_rate", ""),
+        },
+    )
+
+
+@app.post("/c6-inss/include", response_class=HTMLResponse)
+def c6_inss_include_submit(
+    request: Request,
+    tax_identifier: str = Form(""),
+    enrollment: str = Form(""),
+    birth_date: str = Form(""),
+    income_amount: str = Form(""),
+    requested_amount: str = Form(""),
+    installment_quantity: str = Form(""),
+    simulation_type: str = Form("POR_VALOR_SOLICITADO"),
+    operation_type: str = Form("NOVA"),
+    product_type_code: str = Form("0001"),
+    formalization_subtype: str = Form("DIGITAL_WEB"),
+    promoter_code: str = Form("003238"),
+    covenant_group: str = Form("INSS"),
+    public_agency: str = Form("000001"),
+    bank_code: str = Form(""),
+    agency_number: str = Form(""),
+    agency_digit: str = Form(""),
+    account_type: str = Form("01"),
+    account_number: str = Form(""),
+    account_digit: str = Form(""),
+    account_holder_name: str = Form(""),
+    account_holder_tax_identifier: str = Form(""),
+    selected_covenant_code: str = Form(""),
+    selected_covenant_description: str = Form(""),
+    selected_product_code: str = Form(""),
+    selected_product_description: str = Form(""),
+    selected_installment_amount: str = Form(""),
+    selected_monthly_rate: str = Form(""),
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    try:
+        payload = {
+            "operation_type": operation_type.strip(),
+            "product_type_code": product_type_code.strip(),
+            "simulation_type": simulation_type.strip(),
+            "formalization_subtype": formalization_subtype.strip(),
+            "promoter_code": promoter_code.strip().zfill(6),
+            "covenant_group": covenant_group.strip(),
+            "public_agency": public_agency.strip(),
+            "requested_amount": float(str(requested_amount).replace(".", "").replace(",", ".")),
+            "installment_quantity": int("".join(ch for ch in str(installment_quantity) if ch.isdigit()) or "0"),
+            "client": {
+                "tax_identifier": tax_identifier.strip(),
+                "enrollment": enrollment.strip(),
+                "birth_date": birth_date.strip() if "-" in birth_date else f"{birth_date[6:10]}-{birth_date[3:5]}-{birth_date[0:2]}",
+                "income_amount": float(str(income_amount).replace(".", "").replace(",", ".")),
+            },
+            "payment": {
+                "bank_code": bank_code.strip(),
+                "agency_number": agency_number.strip(),
+                "agency_digit": agency_digit.strip(),
+                "account_type": account_type.strip(),
+                "account_number": account_number.strip(),
+                "account_digit": account_digit.strip(),
+                "account_holder_name": account_holder_name.strip(),
+                "account_holder_tax_identifier": account_holder_tax_identifier.strip(),
+            },
+        }
+        # Guarda a condicao selecionada para rastreabilidade operacional.
+        if selected_covenant_code or selected_product_code:
+            payload["selected_condition"] = {
+                "covenant_code": selected_covenant_code,
+                "covenant_description": selected_covenant_description,
+                "product_code": selected_product_code,
+                "product_description": selected_product_description,
+                "installment_amount": selected_installment_amount,
+                "monthly_customer_rate": selected_monthly_rate,
+            }
+    except Exception:
+        return render_template(request, "c6_inss_include.html", {"title": "Inclusao Proposta INSS C6", "error": "Preencha os campos corretamente.", "result": None}, status_code=400)
+
+    try:
+        response = c6_worker_loan_client.include_inss_proposal(payload)
+        log_audit(
+            session,
+            current_user.username,
+            "c6_inss_proposal_included",
+            target_type="integration",
+            message="Operacao C6 INSS inclusao executada.",
+            metadata={"path": str(request.url.path), "action": "include"},
+        )
+        session.commit()
+        result = {"status_code": response.status_code, "data": response.payload, "action": "include", "payload_enviado": payload}
+        error = ""
+    except C6WorkerLoanError as exc:
+        result = None
+        error = f"{exc}\nPayload enviado: {json.dumps(payload, ensure_ascii=False)}"
+
+    return render_template(
+        request,
+        "c6_inss_include.html",
+        {
+            "title": "Inclusao Proposta INSS C6",
+            "result": result,
+            "error": error,
+            "tax_identifier": tax_identifier,
+            "enrollment": enrollment,
+            "birth_date": birth_date,
+            "income_amount": income_amount,
+            "requested_amount": requested_amount,
+            "installment_quantity": installment_quantity,
+            "simulation_type": simulation_type,
+            "operation_type": operation_type,
+            "product_type_code": product_type_code,
+            "formalization_subtype": formalization_subtype,
+            "promoter_code": promoter_code,
+            "covenant_group": covenant_group,
+            "public_agency": public_agency,
+            "bank_code": bank_code,
+            "agency_number": agency_number,
+            "agency_digit": agency_digit,
+            "account_type": account_type,
+            "account_number": account_number,
+            "account_digit": account_digit,
+            "account_holder_name": account_holder_name,
+            "account_holder_tax_identifier": account_holder_tax_identifier,
+            "selected_covenant_code": selected_covenant_code,
+            "selected_covenant_description": selected_covenant_description,
+            "selected_product_code": selected_product_code,
+            "selected_product_description": selected_product_description,
+            "selected_installment_amount": selected_installment_amount,
+            "selected_monthly_rate": selected_monthly_rate,
+        },
+        status_code=400 if error else 200,
+    )
+
+
+@app.post("/c6-worker", response_class=HTMLResponse)
+def c6_worker_submit(
+    request: Request,
+    action: str = Form(...),
+    worker_cpf: str = Form(""),
+    simulation_type: str = Form("POR_VALOR_PARCELA"),
+    simulation_prazo: str = Form(""),
+    simulation_installment_value: str = Form(""),
+    simulation_requested_amount: str = Form(""),
+    simulation_version: str = Form("v2"),
+    include_id_simulacao: str = Form(""),
+    include_ddd: str = Form(""),
+    include_numero_telefone: str = Form(""),
+    include_logradouro: str = Form(""),
+    include_numero: str = Form(""),
+    include_cep: str = Form(""),
+    include_bairro: str = Form(""),
+    include_cidade: str = Form(""),
+    include_uf: str = Form(""),
+    include_codigo_origem_6: str = Form(""),
+    include_numero_cpf_certificado: str = Form(""),
+    include_tipo_conta: str = Form("ContaCorrenteIndividual"),
+    include_numero_banco: str = Form(""),
+    include_numero_agencia: str = Form(""),
+    include_digito_agencia: str = Form(""),
+    include_numero_conta: str = Form(""),
+    include_digito_conta: str = Form(""),
+    auth_nome: str = Form(""),
+    auth_data_nascimento: str = Form(""),
+    auth_ddd: str = Form(""),
+    auth_numero_telefone: str = Form(""),
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    action = (action or "").strip().lower()
+    action_aliases = {
+        "authorization-generate": "authorization_generate",
+        "authorization_generate_liveness": "authorization_generate",
+        "auth_generate": "authorization_generate",
+        "authorization": "authorization_generate",
+        "authorization-status": "authorization_status",
+        "auth_status": "authorization_status",
+    }
+    action = action_aliases.get(action, action)
+
+    if action not in {"offer", "simulation", "include", "authorization_generate", "authorization_status"}:
+        if auth_nome.strip() or auth_data_nascimento.strip() or auth_ddd.strip() or auth_numero_telefone.strip():
+            action = "authorization_generate"
+        elif worker_cpf.strip():
+            action = "authorization_status"
+
+    def render_worker(result: dict[str, object] | None, error: str, status_code: int) -> HTMLResponse:
+        return render_template(
+            request,
+            "c6_worker.html",
+            {
+                "title": "Credito do Trabalhador C6",
+                "result": result,
+                "error": error,
+                "active_action": action,
+                "worker_cpf": worker_cpf,
+                "auth_nome": auth_nome,
+                "auth_data_nascimento": auth_data_nascimento,
+                "auth_ddd": auth_ddd,
+                "auth_numero_telefone": auth_numero_telefone,
+                "simulation_type": simulation_type,
+                "simulation_prazo": simulation_prazo,
+                "simulation_installment_value": simulation_installment_value,
+                "simulation_requested_amount": simulation_requested_amount,
+                "simulation_version": simulation_version,
+                "include_id_simulacao": include_id_simulacao,
+                "include_ddd": include_ddd,
+                "include_numero_telefone": include_numero_telefone,
+                "include_logradouro": include_logradouro,
+                "include_numero": include_numero,
+                "include_cep": include_cep,
+                "include_bairro": include_bairro,
+                "include_cidade": include_cidade,
+                "include_uf": include_uf,
+                "include_codigo_origem_6": include_codigo_origem_6,
+                "include_numero_cpf_certificado": include_numero_cpf_certificado,
+                "include_tipo_conta": include_tipo_conta,
+                "include_numero_banco": include_numero_banco,
+                "include_numero_agencia": include_numero_agencia,
+                "include_digito_agencia": include_digito_agencia,
+                "include_numero_conta": include_numero_conta,
+                "include_digito_conta": include_digito_conta,
+            },
+            status_code=status_code,
+        )
+
+    cpf_digits = "".join(ch for ch in worker_cpf if ch.isdigit())
+    if len(cpf_digits) != 11:
+        return render_worker(None, "CPF invalido. Informe 11 digitos.", 400)
+
+    payload: dict[str, object]
+    try:
+        if action == "offer":
+            payload = {"cpf_cliente": cpf_digits}
+            response = c6_worker_loan_client.generate_offer(payload)
+            action_name = "c6_worker_offer_generated"
+        elif action == "simulation":
+            payload = {"cpf": cpf_digits, "tipo_simulacao": simulation_type}
+            if simulation_type in {"POR_VALOR_PARCELA", "POR_VALOR_SOLICITADO"}:
+                if not simulation_prazo.strip():
+                    raise ValueError("Prazo e obrigatorio para o tipo de simulacao informado.")
+                payload["prazo"] = int(simulation_prazo)
+            if simulation_type == "POR_VALOR_PARCELA":
+                if not simulation_installment_value.strip():
+                    raise ValueError("Valor da parcela e obrigatorio para simulacao por parcela.")
+                payload["valor_parcela"] = float(simulation_installment_value.replace(",", "."))
+            if simulation_type == "POR_VALOR_SOLICITADO":
+                if not simulation_requested_amount.strip():
+                    raise ValueError("Valor solicitado e obrigatorio para simulacao por valor solicitado.")
+                payload["valor_solicitado"] = float(simulation_requested_amount.replace(",", "."))
+            response = c6_worker_loan_client.simulate_proposal(payload, version=simulation_version)
+            action_name = "c6_worker_simulation_requested"
+        elif action == "include":
+            payload = {
+                "id_simulacao": include_id_simulacao.strip(),
+                "cpf": cpf_digits,
+                "ddd": include_ddd.strip(),
+                "numero_telefone": include_numero_telefone.strip(),
+                "logradouro": include_logradouro.strip(),
+                "numero": include_numero.strip(),
+                "cep": include_cep.strip(),
+                "bairro": include_bairro.strip(),
+                "cidade": include_cidade.strip(),
+                "uf": include_uf.strip().upper(),
+                "codigo_origem_6": include_codigo_origem_6.strip(),
+                "numero_cpf_certificado": include_numero_cpf_certificado.strip(),
+                "dados_bancarios": {
+                    "tipo_conta": include_tipo_conta.strip(),
+                    "numero_banco": include_numero_banco.strip(),
+                    "numero_agencia": include_numero_agencia.strip(),
+                    "digito_agencia": include_digito_agencia.strip(),
+                    "numero_conta": include_numero_conta.strip(),
+                    "digito_conta": include_digito_conta.strip(),
+                },
+            }
+            response = c6_worker_loan_client.include_proposal(payload)
+            action_name = "c6_worker_proposal_included"
+        elif action == "authorization_generate":
+            if not auth_nome.strip():
+                raise ValueError("Nome e obrigatorio para gerar o link de autorizacao.")
+            try:
+                data_nascimento_api = datetime.strptime(auth_data_nascimento.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
+            except ValueError:
+                raise ValueError("Data de nascimento invalida. Use o formato dd/mm/aaaa.")
+            payload = {"nome": auth_nome.strip(), "cpf": cpf_digits, "data_nascimento": data_nascimento_api}
+            telefone_numero = "".join(ch for ch in auth_numero_telefone if ch.isdigit())
+            telefone_ddd = "".join(ch for ch in auth_ddd if ch.isdigit())
+            if telefone_numero or telefone_ddd:
+                payload["telefone"] = {"numero": telefone_numero, "codigo_area": telefone_ddd}
+            response = c6_worker_loan_client.generate_authorization_liveness(payload)
+            action_name = "c6_worker_authorization_link_generated"
+        elif action == "authorization_status":
+            payload = {"cpf": cpf_digits}
+            response = c6_worker_loan_client.authorization_status(payload)
+            action_name = "c6_worker_authorization_status_checked"
+        else:
+            raise ValueError("Acao invalida.")
+
+        result = {
+            "status_code": response.status_code,
+            "data": response.payload,
+            "action": action,
+            "payload_enviado": payload,
+        }
+        log_audit(
+            session,
+            current_user.username,
+            action_name,
+            target_type="integration",
+            message="Operacao C6 executada na area de credito do trabalhador.",
+            metadata={"path": str(request.url.path), "action": action},
+        )
+        session.commit()
+        return render_worker(result, "", 200)
+    except (ValueError, C6WorkerLoanError) as exc:
+        fallback_payload = locals().get("payload", {})
+        return render_worker(None, f"{exc}\nPayload enviado: {json.dumps(fallback_payload, ensure_ascii=False)}", 400)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1122,6 +1827,8 @@ def clients_page(
     has_phone: str = "",
     source_file: str = "",
     cpf: str = "",
+    selected_benefit: str = "",
+    selected_occurrence_id: str = "",
     phone: str = "",
     ddd: str = "",
     name: str = "",
@@ -1154,9 +1861,6 @@ def clients_page(
         ddd=ddd,
         name=name,
     )
-    total_results = count_client_results(session, filters)
-    pagination = build_pagination(total_results, page, CLIENTS_PAGE_SIZE)
-    results = query_clients(session, filters, limit=CLIENTS_PAGE_SIZE, offset=int(pagination["offset"]))
     has_active_lookup = any(
         [
             bool(filters.quick_value.strip()),
@@ -1181,7 +1885,90 @@ def clients_page(
             bool(selected_servico.strip()),
         ]
     )
+    safe_page = page if page and page > 0 else 1
+    total_results = 0
+    pagination = build_pagination(total_results, 1, CLIENTS_PAGE_SIZE)
+    results: list[dict[str, object]] = []
+    inss_benefit_choices: list[dict[str, str]] = []
+    if has_active_lookup:
+        offset = (safe_page - 1) * CLIENTS_PAGE_SIZE
+        window = query_clients(session, filters, limit=CLIENTS_PAGE_SIZE + 1, offset=offset)
+        has_next = len(window) > CLIENTS_PAGE_SIZE
+        results = window[:CLIENTS_PAGE_SIZE]
+        total_results = offset + len(results) + (1 if has_next else 0)
+        pagination = {
+            "page": safe_page,
+            "page_size": CLIENTS_PAGE_SIZE,
+            "total_items": total_results,
+            "total_pages": safe_page + 1 if has_next else safe_page,
+            "offset": offset,
+            "has_prev": safe_page > 1,
+            "has_next": has_next,
+            "prev_page": max(safe_page - 1, 1),
+            "next_page": safe_page + 1 if has_next else safe_page,
+        }
+        if normalized_segment == "INSS" and has_value(quick_value) and results:
+            cpfs_in_result = {str(row.get("cpf", "")).strip() for row in results if str(row.get("cpf", "")).strip()}
+            if len(cpfs_in_result) == 1:
+                only_cpf = next(iter(cpfs_in_result))
+                choice_rows = (
+                    session.execute(
+                        select(
+                            ClientOccurrence.id,
+                            ClientOccurrence.nu_nb,
+                            ClientOccurrence.esp,
+                            ClientOccurrence.ddb,
+                            ClientOccurrence.nome,
+                            ImportBatch.ano_referencia,
+                            ImportBatch.mes_referencia,
+                        )
+                        .join(SourceFile, SourceFile.id == ClientOccurrence.source_file_id)
+                        .join(ImportBatch, ImportBatch.id == SourceFile.batch_id)
+                        .where(
+                            ClientOccurrence.cpf == only_cpf,
+                            ClientOccurrence.base_segment == "INSS",
+                        )
+                        .order_by(
+                            ImportBatch.ano_referencia.desc(),
+                            ImportBatch.mes_referencia.desc(),
+                            SourceFile.id.desc(),
+                            ClientOccurrence.id.desc(),
+                        )
+                    )
+                    .all()
+                )
+                seen_choice_keys: set[tuple[str, str, str, str]] = set()
+                for occurrence_id, nu_nb, esp_value, ddb_value, nome_value, ano_ref, mes_ref in choice_rows:
+                    benefit = _norm_text(nu_nb)
+                    species = _norm_text(esp_value)
+                    ddb_text = _norm_text(ddb_value)
+                    reference = f"{int(mes_ref):02d}/{int(ano_ref)}" if mes_ref and ano_ref else "-"
+                    choice_key = (benefit, species, ddb_text, reference)
+                    if choice_key in seen_choice_keys:
+                        continue
+                    seen_choice_keys.add(choice_key)
+                    inss_benefit_choices.append(
+                        {
+                            "occurrence_id": str(occurrence_id),
+                            "cpf": only_cpf,
+                            "client_name": _norm_text(nome_value),
+                            "benefit": benefit or "Sem numero",
+                            "species": species or "-",
+                            "species_meaning": get_species_meaning(species),
+                            "ddb": ddb_text or "-",
+                            "reference": reference,
+                        }
+                    )
     highlight = results[0] if results and has_active_lookup else None
+    if normalized_segment == "INSS":
+        chosen_occurrence_id = _norm_text(selected_occurrence_id)
+        if chosen_occurrence_id:
+            highlight = next(
+                (row for row in results if str(row.get("occurrence_id", "")) == chosen_occurrence_id),
+                highlight,
+            )
+        elif len(inss_benefit_choices) > 1:
+            highlight = None
     public_rows = results if normalized_segment in {"GOVERNO", "PREFEITURA"} else []
     has_public_matriculas = False
     if public_rows:
@@ -1236,11 +2023,14 @@ def clients_page(
             "highlight": highlight,
             "filters": filters,
             "result_count": total_results,
+            "has_active_lookup": has_active_lookup,
             "selected_base_segment": normalized_segment,
             "selected_matricula": selected_matricula,
             "selected_servico": selected_servico,
+            "selected_occurrence_id": selected_occurrence_id,
             "selection_query": selection_query,
             "has_public_matriculas": has_public_matriculas,
+            "inss_benefit_choices": inss_benefit_choices,
             "pagination": pagination,
             "saved_filters": saved_filters,
             "favorite_query": urlencode(build_filter_query_params(filters, normalized_segment, selected_matricula=selected_matricula, selected_servico=selected_servico)),
@@ -1678,10 +2468,87 @@ def delete_history_batch(
     return RedirectResponse(url=target, status_code=303)
 
 
+@app.get("/clients/{cpf}/benefits", response_class=HTMLResponse)
+def client_benefit_selector_page(
+    cpf: str,
+    request: Request,
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    normalized_cpf = "".join(char for char in cpf if char.isdigit())
+    if len(normalized_cpf) != 11:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado.")
+
+    rows = (
+        session.execute(
+            select(
+                ClientOccurrence.id,
+                ClientOccurrence.nu_nb,
+                ClientOccurrence.esp,
+                ClientOccurrence.ddb,
+                ClientOccurrence.nome,
+                ImportBatch.ano_referencia,
+                ImportBatch.mes_referencia,
+            )
+            .join(SourceFile, SourceFile.id == ClientOccurrence.source_file_id)
+            .join(ImportBatch, ImportBatch.id == SourceFile.batch_id)
+            .where(
+                ClientOccurrence.cpf == normalized_cpf,
+                ClientOccurrence.base_segment == "INSS",
+            )
+            .order_by(
+                ImportBatch.ano_referencia.desc(),
+                ImportBatch.mes_referencia.desc(),
+                SourceFile.id.desc(),
+                ClientOccurrence.id.desc(),
+            )
+        )
+        .all()
+    )
+    if not rows:
+        return RedirectResponse(url=f"/clients/{normalized_cpf}", status_code=303)
+
+    unique_benefits: list[dict[str, str]] = []
+    seen_keys: set[tuple[str, str, str, str]] = set()
+    for occurrence_id, nu_nb, esp, ddb, nome, ano_referencia, mes_referencia in rows:
+        benefit = _norm_text(nu_nb)
+        species = _norm_text(esp)
+        ddb_text = _norm_text(ddb)
+        reference = f"{int(mes_referencia):02d}/{int(ano_referencia)}" if mes_referencia and ano_referencia else "-"
+        key = (benefit, species, ddb_text, reference)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique_benefits.append(
+            {
+                "occurrence_id": str(occurrence_id),
+                "benefit": benefit or "Sem numero",
+                "species": species or "-",
+                "species_meaning": get_species_meaning(species),
+                "ddb": ddb_text or "-",
+                "reference": reference,
+                "client_name": _norm_text(nome),
+            }
+        )
+
+    return render_template(
+        request,
+        "client_benefit_selector.html",
+        {
+            "title": "Selecionar beneficio",
+            "cpf": normalized_cpf,
+            "benefits": unique_benefits,
+            "client_name": unique_benefits[0]["client_name"] if unique_benefits else "",
+        },
+    )
+
+
 @app.get("/clients/{cpf}", response_class=HTMLResponse)
 def client_detail_page(
     cpf: str,
     request: Request,
+    selected_benefit: str = "",
+    selected_occurrence_id: str = "",
     current_user: AppUser = Depends(require_permission("can_search")),
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
@@ -1708,6 +2575,29 @@ def client_detail_page(
     )
     if client is None and not occurrences:
         raise HTTPException(status_code=404, detail="Cliente nao encontrado.")
+
+    preferred_occurrence_id = _norm_text(selected_occurrence_id)
+    preferred_benefit = _norm_text(selected_benefit)
+    if preferred_occurrence_id and occurrences:
+        occurrences = sorted(
+            occurrences,
+            key=lambda item: (
+                0 if str(item[0].id) == preferred_occurrence_id else 1,
+                -int(item[3] or 0),
+                -int(item[4] or 0),
+                -int(item[0].id or 0),
+            ),
+        )
+    elif preferred_benefit and occurrences:
+        occurrences = sorted(
+            occurrences,
+            key=lambda item: (
+                0 if _norm_text(item[0].nu_nb) == preferred_benefit else 1,
+                -int(item[3] or 0),
+                -int(item[4] or 0),
+                -int(item[0].id or 0),
+            ),
+        )
 
     latest_occurrence = occurrences[0][0] if occurrences else None
     if client is None and latest_occurrence is not None:
@@ -2221,6 +3111,54 @@ def c6_include_worker_loan(
         "c6_worker_proposal_included",
         target_type="integration",
         message="Inclusao do consignado trabalhador solicitada.",
+        metadata={"path": str(request.url.path)},
+    )
+    session.commit()
+    return JSONResponse({"status_code": response.status_code, "data": response.payload}, status_code=200)
+
+
+@app.post("/api/c6/worker-loan/authorization/generate-liveness")
+def c6_generate_worker_authorization_liveness(
+    request: Request,
+    body: dict[str, object] = Body(...),
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> JSONResponse:
+    try:
+        response = c6_worker_loan_client.generate_authorization_liveness(body)
+    except C6WorkerLoanError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    log_audit(
+        session,
+        current_user.username,
+        "c6_worker_authorization_link_generated",
+        target_type="integration",
+        message="Link de autorizacao do consignado trabalhador solicitado.",
+        metadata={"path": str(request.url.path)},
+    )
+    session.commit()
+    return JSONResponse({"status_code": response.status_code, "data": response.payload}, status_code=200)
+
+
+@app.post("/api/c6/worker-loan/authorization/status")
+def c6_worker_authorization_status(
+    request: Request,
+    body: dict[str, object] = Body(...),
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> JSONResponse:
+    try:
+        response = c6_worker_loan_client.authorization_status(body)
+    except C6WorkerLoanError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    log_audit(
+        session,
+        current_user.username,
+        "c6_worker_authorization_status_checked",
+        target_type="integration",
+        message="Status da autorizacao do consignado trabalhador consultado.",
         metadata={"path": str(request.url.path)},
     )
     session.commit()

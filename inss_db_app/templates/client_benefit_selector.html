@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="client-view-shell">
+    <article class="card client-view-hero">
+        <div class="client-view-hero-main">
+            <div class="client-view-heading">
+                <span class="client-view-kicker">Selecionar beneficio</span>
+                <div class="client-view-title-row">
+                    <div>
+                        <h2>{{ client_name or "Cliente" }}</h2>
+                        <p>CPF {{ cpf }}</p>
+                    </div>
+                    <div class="client-view-actions">
+                        <a href="/clients" class="top-action ghost">Voltar</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </article>
+</section>
+
+<section class="client-view-grid">
+    <article class="card client-view-panel">
+        <div class="client-view-panel-head">
+            <div>
+                <span class="client-view-section-kicker">Beneficios</span>
+                <h3>Escolha o beneficio para consultar</h3>
+            </div>
+            <span class="client-view-badge">{{ benefits|length }} encontrado(s)</span>
+        </div>
+        <div class="consult-table-wrap">
+            <table class="consult-table">
+                <thead>
+                    <tr><th>Beneficio</th><th>Especie</th><th>Significado</th><th>DDB</th><th>Referencia</th><th>Acao</th></tr>
+                </thead>
+                <tbody>
+                    {% for item in benefits %}
+                    <tr>
+                        <td>{{ item.benefit }}</td>
+                        <td>{{ item.species }}</td>
+                        <td>{{ item.species_meaning or "-" }}</td>
+                        <td>{{ item.ddb }}</td>
+                        <td>{{ item.reference }}</td>
+                        <td><a class="consult-action inline" href="/clients/{{ cpf }}?selected_occurrence_id={{ item.occurrence_id }}">Consultar</a></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+</section>
+{% endblock %}

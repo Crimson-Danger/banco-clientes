@@ -1,198 +1,167 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="users-admin-shell">
-    <article class="users-admin-panel">
-        <div class="users-admin-toolbar">
-            <div class="users-admin-title">
-                <span class="users-admin-kicker">Controle de acesso</span>
-                <h2>Usuarios</h2>
-                <p>Crie operadores, ajuste permissoes e mantenha cada acesso no nivel certo.</p>
+{% set summary = namespace(total=0, active=0, admins=0) %}
+{% for user in users %}
+    {% set summary.total = summary.total + 1 %}
+    {% if user.is_active %}{% set summary.active = summary.active + 1 %}{% endif %}
+    {% if user.is_admin %}{% set summary.admins = summary.admins + 1 %}{% endif %}
+{% endfor %}
+
+<section class="ua-shell">
+    <div class="ua-bg-orb ua-bg-orb-a"></div>
+    <div class="ua-bg-orb ua-bg-orb-b"></div>
+
+    <article class="ua-panel">
+        <header class="ua-header">
+            <div>
+                <h2>Administracao de Usuarios</h2>
+                <p>Gerencie usuarios e permissoes com controle fino de acesso.</p>
             </div>
-            <div class="users-admin-actions">
-                <button type="button" class="users-primary-action" data-user-toggle="create-user-panel">+ Novo usuario</button>
-                <label class="users-search-box">
-                    <input type="search" placeholder="Buscar por nome ou usuario" data-user-search>
-                </label>
-            </div>
+            <button type="button" class="ua-btn ua-btn-primary" data-open-modal="create-user-modal">+ Novo Usuario</button>
+        </header>
+
+        <section class="ua-kpis">
+            <div class="ua-kpi"><span>Total</span><strong>{{ summary.total }}</strong></div>
+            <div class="ua-kpi"><span>Ativos</span><strong>{{ summary.active }}</strong></div>
+            <div class="ua-kpi"><span>Inativos</span><strong>{{ summary.total - summary.active }}</strong></div>
+            <div class="ua-kpi"><span>Admins</span><strong>{{ summary.admins }}</strong></div>
+        </section>
+
+        {% if message %}<p class="success">{{ message }}</p>{% endif %}
+        {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+        <div class="ua-toolbar">
+            <label class="ua-search">
+                <input type="search" placeholder="Buscar por nome ou usuario" data-user-search>
+            </label>
         </div>
 
-        {% if message %}
-        <p class="success">{{ message }}</p>
-        {% endif %}
-        {% if error %}
-        <p class="error">{{ error }}</p>
-        {% endif %}
-
-        <details class="users-create-panel" id="create-user-panel">
-            <summary class="users-create-summary">Novo usuario e permissoes</summary>
-            <form method="post" action="/users" class="users-editor-form">
-                <div class="users-editor-grid">
-                    <section class="users-editor-section">
-                        <span class="users-editor-label">Dados do usuario</span>
-                        <div class="form-grid">
-                            <label>Usuario
-                                <input type="text" name="username" required>
-                            </label>
-                            <label>Nome completo
-                                <input type="text" name="full_name">
-                            </label>
-                            <label>Senha inicial
-                                <input type="password" name="password" required>
-                            </label>
-                        </div>
-                    </section>
-                    <section class="users-editor-section">
-                        <span class="users-editor-label">Acessos liberados</span>
-                        <div class="users-permission-grid">
-                            {% for key, label in permission_labels.items() %}
-                            <label class="users-permission-pill">
-                                <input type="checkbox" name="{{ key }}" {% if key in ["can_view_dashboard", "can_search"] %}checked{% endif %}>
-                                <span>{{ label }}</span>
-                            </label>
-                            {% endfor %}
-                        </div>
-                        <div class="users-permission-grid users-permission-grid-meta">
-                            <label class="users-permission-pill">
-                                <input type="checkbox" name="is_active" checked>
-                                <span>Ativo</span>
-                            </label>
-                            <label class="users-permission-pill">
-                                <input type="checkbox" name="is_admin">
-                                <span>Administrador</span>
-                            </label>
-                        </div>
-                    </section>
-                </div>
-                <button type="submit" class="users-save-action">Criar usuario</button>
-            </form>
-        </details>
-
-        <div class="users-table-shell">
-            <div class="users-table-head">
-                <span>Usuario</span>
-                <span>Status</span>
-                <span>Perfil</span>
-                <span>Acessos</span>
-                <span>Acoes</span>
-            </div>
-
-            <div class="users-table-body">
-                {% for user in users %}
-                <details class="users-row" data-user-item data-search-text="{{ (user.full_name or user.username) ~ ' ' ~ user.username }}">
-                    <summary class="users-row-summary">
-                        <div class="users-row-main">
-                            <span class="users-cell-label">Usuario</span>
-                            <strong>{{ user.full_name or user.username }}</strong>
-                            <small>@{{ user.username }}</small>
-                        </div>
-                        <div class="users-row-status">
-                            <span class="users-cell-label">Status</span>
-                            <span class="users-status-badge {{ 'is-active' if user.is_active else 'is-inactive' }}">
-                                {{ "Ativo" if user.is_active else "Inativo" }}
-                                {% if user.locked_until %} / Bloqueado{% endif %}
-                            </span>
-                        </div>
-                        <div class="users-row-profile">
-                            <span class="users-cell-label">Perfil</span>
-                            <span class="users-profile-badge {{ 'is-admin' if user.is_admin else 'is-operator' }}">
-                                {{ "Administrador" if user.is_admin else "Operador" }}
-                            </span>
-                        </div>
-                        <div class="users-row-permissions">
-                            <span class="users-cell-label">Acessos</span>
-                            {% set permission_count = 0 %}
-                            {% for key, label in permission_labels.items() %}
-                                {% if user.is_admin or user|attr(key) %}
-                                    {% set permission_count = permission_count + 1 %}
-                                {% endif %}
-                            {% endfor %}
-                            <strong>{{ permission_count }}</strong>
-                            <small>liberados</small>
-                        </div>
-                        <div class="users-row-actions">
-                            <span class="users-cell-label">Acoes</span>
-                            <span class="users-row-link">Editar</span>
-                        </div>
-                    </summary>
-
-                    <div class="users-row-editor">
-                        <form method="post" action="/users/{{ user.id }}" class="users-editor-form users-editor-form-inline">
-                            <div class="users-editor-grid">
-                                <section class="users-editor-section">
-                                    <span class="users-editor-label">Dados do operador</span>
-                                    <div class="form-grid">
-                                        <label>Usuario
-                                            <input type="text" name="username" value="{{ user.username }}" required>
-                                        </label>
-                                        <label>Nome completo
-                                            <input type="text" name="full_name" value="{{ user.full_name }}">
-                                        </label>
-                                        <label>Nova senha
-                                            <input type="password" name="password" placeholder="Deixe em branco para manter">
-                                        </label>
-                                        <label>Ultimo acesso
-                                            <input type="text" value="{{ user.last_login_at.strftime('%d/%m/%Y %H:%M') if user.last_login_at else 'Nunca acessou' }}" readonly>
-                                        </label>
-                                        <label>Ultimo reset
-                                            <input type="text" value="{{ user.last_password_reset_at.strftime('%d/%m/%Y %H:%M') if user.last_password_reset_at else 'Nao houve' }}" readonly>
-                                        </label>
-                                        <label>Bloqueado ate
-                                            <input type="text" value="{{ user.locked_until.strftime('%d/%m/%Y %H:%M') if user.locked_until else 'Livre' }}" readonly>
-                                        </label>
-                                    </div>
-                                </section>
-                                <section class="users-editor-section">
-                                    <span class="users-editor-label">Permissoes deste usuario</span>
-                                    <div class="users-permission-grid">
-                                        {% for key, label in permission_labels.items() %}
-                                        <label class="users-permission-pill">
-                                            <input type="checkbox" name="{{ key }}" {% if user.is_admin or user|attr(key) %}checked{% endif %}>
-                                            <span>{{ label }}</span>
-                                        </label>
-                                        {% endfor %}
-                                    </div>
-                                    <div class="users-permission-grid users-permission-grid-meta">
-                                        <label class="users-permission-pill">
-                                            <input type="checkbox" name="is_active" {% if user.is_active %}checked{% endif %}>
-                                            <span>Ativo</span>
-                                        </label>
-                                        <label class="users-permission-pill">
-                                            <input type="checkbox" name="is_admin" {% if user.is_admin %}checked{% endif %}>
-                                            <span>Administrador</span>
-                                        </label>
-                                    </div>
-                                </section>
+        <div class="ua-table-wrap">
+            <table class="ua-table">
+                <thead>
+                    <tr>
+                        <th>Nome</th>
+                        <th>Usuario</th>
+                        <th>Perfil</th>
+                        <th>Permissoes</th>
+                        <th>Status</th>
+                        <th>Acoes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    {% set permission_count = 0 %}
+                    {% for key, label in permission_labels.items() %}
+                        {% if user.is_admin or user|attr(key) %}
+                            {% set permission_count = permission_count + 1 %}
+                        {% endif %}
+                    {% endfor %}
+                    <tr data-user-item data-search-text="{{ (user.full_name or user.username) ~ ' ' ~ user.username }}">
+                        <td>
+                            <div class="ua-name-cell">
+                                <span class="ua-avatar">{{ (user.full_name or user.username)[0]|upper }}</span>
+                                <div>
+                                    <strong>{{ user.full_name or user.username }}</strong>
+                                    <small>Ultimo acesso: {{ user.last_login_at.strftime('%d/%m/%Y %H:%M') if user.last_login_at else 'Nunca' }}</small>
+                                </div>
                             </div>
-                            <div class="users-editor-actions">
-                                <button type="submit" class="users-save-action">Salvar alteracoes</button>
-                            </div>
-                        </form>
-                        <div class="users-extra-actions">
-                            <form method="post" action="/users/{{ user.id }}/reset-password" class="users-inline-admin-form">
-                                <label>Reset rapido de senha
-                                    <input type="password" name="new_password" placeholder="Nova senha" required>
-                                </label>
-                                <button type="submit" class="users-save-action">Resetar senha</button>
-                            </form>
-                            <form method="post" action="/users/{{ user.id }}/lock" class="users-inline-admin-form">
-                                <label>Bloqueio temporario (minutos)
-                                    <input type="number" name="minutes" min="0" value="{% if user.locked_until %}0{% else %}60{% endif %}">
-                                </label>
-                                <button type="submit" class="users-save-action">{% if user.locked_until %}Desbloquear{% else %}Bloquear{% endif %}</button>
-                            </form>
-                        </div>
-                    </div>
-                </details>
-                {% else %}
-                <div class="users-empty-state">
-                    <strong>Nenhum usuario cadastrado.</strong>
-                    <p>Crie o primeiro operador para começar a distribuir os acessos do sistema.</p>
-                </div>
-                {% endfor %}
-            </div>
+                        </td>
+                        <td>@{{ user.username }}</td>
+                        <td>
+                            <span class="ua-badge {{ 'ua-badge-admin' if user.is_admin else 'ua-badge-operator' }}">{{ 'Administrador' if user.is_admin else 'Operador' }}</span>
+                        </td>
+                        <td>
+                            <span class="ua-tag">{{ permission_count }} modulos</span>
+                        </td>
+                        <td>
+                            <span class="ua-badge {{ 'ua-badge-active' if user.is_active else 'ua-badge-inactive' }}">{{ 'Ativo' if user.is_active else 'Inativo' }}{% if user.locked_until %} / Bloqueado{% endif %}</span>
+                        </td>
+                        <td>
+                            <button type="button" class="ua-btn ua-btn-ghost" data-open-modal="edit-user-{{ user.id }}">Editar</button>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="ua-empty">Nenhum usuario cadastrado.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
     </article>
 </section>
+
+<div class="ua-modal" id="create-user-modal" aria-hidden="true">
+    <div class="ua-modal-dialog">
+        <div class="ua-modal-head">
+            <h3>Novo Usuario</h3>
+            <button type="button" class="ua-modal-close" data-close-modal>&times;</button>
+        </div>
+        <form method="post" action="/users" class="ua-form">
+            <div class="ua-form-grid">
+                <label>Usuario *<input type="text" name="username" required autocomplete="username"></label>
+                <label>Nome completo<input type="text" name="full_name"></label>
+                <label>Senha inicial *<input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
+            </div>
+            <h4>Permissoes do sistema</h4>
+            <div class="ua-perm-grid">
+                {% for key, label in permission_labels.items() %}
+                <label><input type="checkbox" name="{{ key }}" {% if key in ["can_view_dashboard", "can_search"] %}checked{% endif %}> {{ label }}</label>
+                {% endfor %}
+            </div>
+            <div class="ua-perm-meta">
+                <label><input type="checkbox" name="is_active" checked> Usuario ativo</label>
+                <label><input type="checkbox" name="is_admin"> Administrador</label>
+            </div>
+            <div class="ua-form-actions">
+                <button type="button" class="ua-btn ua-btn-ghost" data-close-modal>Cancelar</button>
+                <button type="submit" class="ua-btn ua-btn-primary">Criar Usuario</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% for user in users %}
+<div class="ua-modal" id="edit-user-{{ user.id }}" aria-hidden="true">
+    <div class="ua-modal-dialog">
+        <div class="ua-modal-head">
+            <h3>Editar Usuario</h3>
+            <button type="button" class="ua-modal-close" data-close-modal>&times;</button>
+        </div>
+        <form method="post" action="/users/{{ user.id }}" class="ua-form">
+            <div class="ua-form-grid">
+                <label>Usuario *<input type="text" name="username" value="{{ user.username }}" required></label>
+                <label>Nome completo<input type="text" name="full_name" value="{{ user.full_name }}"></label>
+                <label>Nova senha<input type="password" name="password" placeholder="Deixe em branco para manter"></label>
+            </div>
+            <h4>Permissoes do sistema</h4>
+            <div class="ua-perm-grid">
+                {% for key, label in permission_labels.items() %}
+                <label><input type="checkbox" name="{{ key }}" {% if user.is_admin or user|attr(key) %}checked{% endif %}> {{ label }}</label>
+                {% endfor %}
+            </div>
+            <div class="ua-perm-meta">
+                <label><input type="checkbox" name="is_active" {% if user.is_active %}checked{% endif %}> Usuario ativo</label>
+                <label><input type="checkbox" name="is_admin" {% if user.is_admin %}checked{% endif %}> Administrador</label>
+            </div>
+            <div class="ua-form-actions">
+                <button type="button" class="ua-btn ua-btn-ghost" data-close-modal>Cancelar</button>
+                <button type="submit" class="ua-btn ua-btn-primary">Salvar Alteracoes</button>
+            </div>
+        </form>
+        <div class="ua-inline-tools">
+            <form method="post" action="/users/{{ user.id }}/reset-password" class="ua-inline-form">
+                <label>Reset rapido de senha<input type="password" name="new_password" placeholder="Nova senha" required></label>
+                <button type="submit" class="ua-btn ua-btn-ghost">Resetar</button>
+            </form>
+            <form method="post" action="/users/{{ user.id }}/lock" class="ua-inline-form">
+                <label>Bloqueio (minutos)<input type="number" name="minutes" min="0" value="{% if user.locked_until %}0{% else %}60{% endif %}"></label>
+                <button type="submit" class="ua-btn ua-btn-ghost">{% if user.locked_until %}Desbloquear{% else %}Bloquear{% endif %}</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endfor %}
 
 <section class="card users-audit-card">
     <div class="section-head">
@@ -221,16 +190,45 @@
 
 <script>
 document.addEventListener("DOMContentLoaded", function () {
-    const toggleButton = document.querySelector("[data-user-toggle]");
-    const createPanel = document.getElementById("create-user-panel");
-    if (toggleButton && createPanel) {
-        toggleButton.addEventListener("click", function () {
-            createPanel.open = !createPanel.open;
-            if (createPanel.open) {
-                createPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    const openButtons = document.querySelectorAll("[data-open-modal]");
+    const closeButtons = document.querySelectorAll("[data-close-modal]");
+    const modals = document.querySelectorAll(".ua-modal");
+
+    function closeAllModals() {
+        modals.forEach(function (modal) {
+            modal.classList.remove("is-open");
+            modal.setAttribute("aria-hidden", "true");
+        });
+        document.body.classList.remove("ua-modal-open");
+    }
+
+    openButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+            const targetId = button.getAttribute("data-open-modal");
+            const target = document.getElementById(targetId);
+            if (!target) return;
+            closeAllModals();
+            target.classList.add("is-open");
+            target.setAttribute("aria-hidden", "false");
+            document.body.classList.add("ua-modal-open");
+        });
+    });
+
+    closeButtons.forEach(function (button) {
+        button.addEventListener("click", closeAllModals);
+    });
+
+    modals.forEach(function (modal) {
+        modal.addEventListener("click", function (event) {
+            if (event.target === modal) {
+                closeAllModals();
             }
         });
-    }
+    });
+
+    document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") closeAllModals();
+    });
 
     const searchInput = document.querySelector("[data-user-search]");
     const userItems = document.querySelectorAll("[data-user-item]");

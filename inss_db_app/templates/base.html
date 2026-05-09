@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ title if title else "Banco de Clientes" }}</title>
     <link rel="stylesheet" href="/static/styles.css">
+    <script>
+        (function() {
+            const savedTheme = localStorage.getItem("app-theme");
+            if (savedTheme === "dark") {
+                const darkLink = document.createElement("link");
+                darkLink.id = "dark-theme-link";
+                darkLink.rel = "stylesheet";
+                darkLink.href = "/static/dark.css";
+                document.head.appendChild(darkLink);
+            }
+        })();
+    </script>
 </head>
 <body>
     {% if current_user %}
@@ -18,23 +30,26 @@
                 </div>
             </div>
             <nav class="sidebar-nav">
+                {% set current_path = request.url.path %}
                 {% if permissions.can_view_dashboard %}
-                <a href="/" class="nav-link"><span class="nav-icon">HM</span><span>Inicio</span></a>
+                <a href="/" class="nav-link{% if current_path == '/' %} is-active{% endif %}"><span class="nav-icon">HM</span><span>Inicio</span></a>
                 {% endif %}
                 {% if permissions.can_import %}
-                <a href="/import" class="nav-link"><span class="nav-icon">IM</span><span>Importacao</span></a>
+                <a href="/import" class="nav-link{% if current_path.startswith('/import') %} is-active{% endif %}"><span class="nav-icon">IM</span><span>Importacao</span></a>
                 {% endif %}
                 {% if permissions.can_search %}
-                <a href="/clients" class="nav-link"><span class="nav-icon">SG</span><span>Segmentacao</span></a>
+                <a href="/clients" class="nav-link{% if current_path.startswith('/clients') %} is-active{% endif %}"><span class="nav-icon">SG</span><span>Segmentacao</span></a>
+                <a href="/c6-inss" class="nav-link{% if current_path.startswith('/c6-inss') %} is-active{% endif %}"><span class="nav-icon">IN</span><span>Consignado INSS</span></a>
+                <a href="/c6-worker" class="nav-link{% if current_path.startswith('/c6-worker') %} is-active{% endif %}"><span class="nav-icon">C6</span><span>Consignado Trabalhador</span></a>
                 {% endif %}
                 {% if permissions.can_export %}
-                <a href="/exports" class="nav-link"><span class="nav-icon">EX</span><span>Listas</span></a>
+                <a href="/exports" class="nav-link{% if current_path.startswith('/exports') %} is-active{% endif %}"><span class="nav-icon">EX</span><span>Listas</span></a>
                 {% endif %}
                 {% if permissions.can_view_history %}
-                <a href="/history" class="nav-link"><span class="nav-icon">HS</span><span>Historico</span></a>
+                <a href="/history" class="nav-link{% if current_path.startswith('/history') %} is-active{% endif %}"><span class="nav-icon">HS</span><span>Historico</span></a>
                 {% endif %}
                 {% if permissions.can_manage_users %}
-                <a href="/users" class="nav-link"><span class="nav-icon">US</span><span>Usuarios</span></a>
+                <a href="/users" class="nav-link{% if current_path.startswith('/users') %} is-active{% endif %}"><span class="nav-icon">US</span><span>Usuarios</span></a>
                 {% endif %}
             </nav>
         </aside>
@@ -45,6 +60,7 @@
                     <p>Importacao, consulta e geracao de listas por dominio de base.</p>
                 </div>
                 <div class="topbar-actions">
+                    <button type="button" id="theme-toggle" class="top-action ghost">Modo noturno</button>
                     {% if permissions.can_export %}
                     <a href="/exports" class="top-action">Gerar lista de contatos</a>
                     {% endif %}
@@ -65,5 +81,49 @@
         {% block auth_content %}{% endblock %}
     </main>
     {% endif %}
+    <script>
+        (function() {
+            const btn = document.getElementById("theme-toggle");
+            if (!btn) return;
+
+            const themeStorageKey = "app-theme";
+            const darkHref = "/static/dark.css";
+
+            function getDarkLink() {
+                return document.getElementById("dark-theme-link");
+            }
+
+            function ensureDarkLink() {
+                let link = getDarkLink();
+                if (!link) {
+                    link = document.createElement("link");
+                    link.id = "dark-theme-link";
+                    link.rel = "stylesheet";
+                    link.href = darkHref;
+                    document.head.appendChild(link);
+                }
+                return link;
+            }
+
+            function setButtonLabel() {
+                const isDark = !!getDarkLink();
+                btn.textContent = isDark ? "Modo claro" : "Modo noturno";
+            }
+
+            btn.addEventListener("click", function() {
+                const current = getDarkLink();
+                if (current) {
+                    current.remove();
+                    localStorage.setItem(themeStorageKey, "light");
+                } else {
+                    ensureDarkLink();
+                    localStorage.setItem(themeStorageKey, "dark");
+                }
+                setButtonLabel();
+            });
+
+            setButtonLabel();
+        })();
+    </script>
 </body>
 </html>

@@ -1398,6 +1398,18 @@ def extract_cpfs_from_rows(rows: list[dict[str, str]]) -> set[str]:
     return cpfs
 
 
+def collect_date_like_values(row: dict[str, str]) -> list[tuple[str, str]]:
+    hints = ("DT", "DATA", "NASC", "DDB", "CONCESSAO", "BENEFICIO")
+    items: list[tuple[str, str]] = []
+    for key, value in row.items():
+        if not value:
+            continue
+        upper_key = key.upper()
+        if any(token in upper_key for token in hints):
+            items.append((key, str(value)))
+    return items
+
+
 def rebuild_clients_for_cpfs(session: Session, cpfs: set[str]) -> None:
     normalized_cpfs = {cpf for cpf in cpfs if cpf}
     if not normalized_cpfs:
@@ -1692,7 +1704,19 @@ def process_import_batch(session: Session, batch: ImportBatch, request: ImportRe
                 file_affected_cpfs: set[str] = set()
                 occurrence_buffer: list[ClientOccurrence] = []
                 for row_index, raw_row in enumerate(rows, start=1):
-                    normalized = normalize_row(raw_row)
+                    try:
+                        normalized = normalize_row(raw_row)
+                    except Exception as exc:
+                        summary.invalid_rows += 1
+                        date_like_values = collect_date_like_values(raw_row)
+                        details = " | ".join(f"{key}={value}" for key, value in date_like_values[:6]) or "sem campos de data detectados"
+                        error_message = (
+                            f"{file_path.name}: linha {row_index} invalida ({type(exc).__name__}: {exc}). "
+                            f"Campos analisados: {details}"
+                        )
+                        if len(summary.validation_errors) < 100:
+                            summary.validation_errors.append(error_message)
+                        continue
                     normalized = enrich_normalized_row_with_cep(normalized, cep_cache)
                     normalized = enrich_normalized_row_with_ddd(normalized, ddd_cache)
                     normalized["base_segment"] = normalize_base_segment(batch.base_segment)
@@ -2121,6 +2145,7 @@ def _serialize_occurrence_row(
             display_vl_margem,
         )
     return {
+        "occurrence_id": occurrence.id,
         "cpf": occurrence.cpf,
         "base_segment": occurrence.base_segment,
         "base_source": occurrence.base_source,

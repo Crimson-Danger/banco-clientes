@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card clt-hero">
+    <h2>Inclusao Proposta INSS - C6</h2>
+    <p>Preencha os dados bancarios e conclua a inclusao da proposta.</p>
+    {% if error %}
+    <p class="clt-alert"><strong>{{ error }}</strong></p>
+    {% endif %}
+</section>
+
+{% if selected_covenant_code %}
+<section class="card clt-card">
+    <h3>Condicao Selecionada</h3>
+    <div class="c6-result-kpis">
+        <div><span>Convenio</span><strong>{{ selected_covenant_code }}</strong></div>
+        <div><span>Produto</span><strong>{{ selected_product_code }}</strong></div>
+        <div><span>Parcela</span><strong>{{ selected_installment_amount }}</strong></div>
+    </div>
+    <p><strong>{{ selected_covenant_description }}</strong> | {{ selected_product_description }} | Taxa a.m.: {{ selected_monthly_rate }}</p>
+</section>
+{% endif %}
+
+<section>
+    <article class="card clt-card">
+        <h3>Incluir Proposta INSS</h3>
+        <form method="post" action="/c6-inss/include" class="c6-form-grid">
+            <input type="hidden" name="selected_covenant_code" value="{{ selected_covenant_code }}">
+            <input type="hidden" name="selected_covenant_description" value="{{ selected_covenant_description }}">
+            <input type="hidden" name="selected_product_code" value="{{ selected_product_code }}">
+            <input type="hidden" name="selected_product_description" value="{{ selected_product_description }}">
+            <input type="hidden" name="selected_installment_amount" value="{{ selected_installment_amount }}">
+            <input type="hidden" name="selected_monthly_rate" value="{{ selected_monthly_rate }}">
+            <div class="c6-section-title">Dados Basicos</div>
+            <div class="c6-compact-grid">
+                <div><label>CPF</label><input type="text" name="tax_identifier" value="{{ tax_identifier }}" required></div>
+                <div><label>Matricula</label><input type="text" name="enrollment" value="{{ enrollment }}" minlength="10" maxlength="10" required></div>
+                <div><label>Nascimento</label><input type="text" name="birth_date" value="{{ birth_date }}" required></div>
+                <div><label>Renda</label><input type="text" name="income_amount" value="{{ income_amount }}" class="money-br" required></div>
+                <div><label>Valor solicitado</label><input type="text" name="requested_amount" value="{{ requested_amount }}" class="money-br" required></div>
+                <div><label>Parcelas</label><input type="text" name="installment_quantity" value="{{ installment_quantity }}" required></div>
+                <div>
+                    <label>Tipo simulacao</label>
+                    <select name="simulation_type" required>
+                        <option value="POR_VALOR_SOLICITADO" {% if simulation_type == "POR_VALOR_SOLICITADO" %}selected{% endif %}>Por valor solicitado</option>
+                        <option value="POR_VALOR_PARCELA" {% if simulation_type == "POR_VALOR_PARCELA" %}selected{% endif %}>Por valor da parcela</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Tipo operacao</label>
+                    <select name="operation_type" required>
+                        <option value="NOVA" {% if operation_type == "NOVA" %}selected{% endif %}>Nova</option>
+                    </select>
+                </div>
+                <div><label>Produto</label><input type="text" name="product_type_code" value="{{ product_type_code }}" required></div>
+                <div>
+                    <label>Formalizacao</label>
+                    <select name="formalization_subtype" required>
+                        <option value="DIGITAL_WEB" {% if formalization_subtype == "DIGITAL_WEB" %}selected{% endif %}>Digital Web</option>
+                    </select>
+                </div>
+                <div><label>Promoter code</label><input type="text" name="promoter_code" value="{{ promoter_code }}" required></div>
+                <div>
+                    <label>Grupo convenio</label>
+                    <select name="covenant_group" required>
+                        <option value="INSS" {% if covenant_group == "INSS" %}selected{% endif %}>INSS</option>
+                    </select>
+                </div>
+                <div><label>Codigo orgao publico</label><input type="text" name="public_agency" value="{{ public_agency }}" required></div>
+            </div>
+            <div class="c6-section-title">Dados Bancarios</div>
+            <div class="c6-compact-grid">
+                <div>
+                    <label>Codigo do banco</label>
+                    <select name="bank_code" required>
+                        <option value="">Selecionar banco</option>
+                        <option value="001" {% if bank_code == "001" %}selected{% endif %}>001 - Banco do Brasil</option>
+                        <option value="033" {% if bank_code == "033" %}selected{% endif %}>033 - Santander</option>
+                        <option value="041" {% if bank_code == "041" %}selected{% endif %}>041 - Banrisul</option>
+                        <option value="070" {% if bank_code == "070" %}selected{% endif %}>070 - BRB</option>
+                        <option value="077" {% if bank_code == "077" %}selected{% endif %}>077 - Inter</option>
+                        <option value="104" {% if bank_code == "104" %}selected{% endif %}>104 - Caixa Economica Federal</option>
+                        <option value="121" {% if bank_code == "121" %}selected{% endif %}>121 - Agibank</option>
+                        <option value="212" {% if bank_code == "212" %}selected{% endif %}>212 - Original</option>
+                        <option value="237" {% if bank_code == "237" %}selected{% endif %}>237 - Bradesco</option>
+                        <option value="260" {% if bank_code == "260" %}selected{% endif %}>260 - Nu Pagamentos (Nubank)</option>
+                        <option value="290" {% if bank_code == "290" %}selected{% endif %}>290 - PagSeguro</option>
+                        <option value="318" {% if bank_code == "318" %}selected{% endif %}>318 - Banco BMG</option>
+                        <option value="336" {% if bank_code == "336" %}selected{% endif %}>336 - C6 Bank</option>
+                        <option value="341" {% if bank_code == "341" %}selected{% endif %}>341 - Itau</option>
+                        <option value="422" {% if bank_code == "422" %}selected{% endif %}>422 - Safra</option>
+                        <option value="623" {% if bank_code == "623" %}selected{% endif %}>623 - Banco Pan</option>
+                        <option value="655" {% if bank_code == "655" %}selected{% endif %}>655 - Votorantim</option>
+                        <option value="707" {% if bank_code == "707" %}selected{% endif %}>707 - Daycoval</option>
+                        <option value="756" {% if bank_code == "756" %}selected{% endif %}>756 - Sicoob</option>
+                    </select>
+                </div>
+                <div><label>Numero da agencia</label><input type="text" name="agency_number" value="{{ agency_number }}" required></div>
+                <div><label>Digito da agencia</label><input type="text" name="agency_digit" value="{{ agency_digit }}" required></div>
+                <div>
+                    <label>Tipo de conta</label>
+                    <select name="account_type" required>
+                        <option value="01" {% if account_type == "01" %}selected{% endif %}>01 - Conta Corrente Individual</option>
+                        <option value="02" {% if account_type == "02" %}selected{% endif %}>02 - Conta Poupanca Individual</option>
+                        <option value="03" {% if account_type == "03" %}selected{% endif %}>03 - Conta Salario</option>
+                        <option value="04" {% if account_type == "04" %}selected{% endif %}>04 - Conta Corrente Conjunta</option>
+                        <option value="05" {% if account_type == "05" %}selected{% endif %}>05 - Conta Poupanca Conjunta</option>
+                        <option value="06" {% if account_type == "06" %}selected{% endif %}>06 - Conta Investimento</option>
+                    </select>
+                </div>
+                <div><label>Numero da conta</label><input type="text" name="account_number" value="{{ account_number }}" required></div>
+                <div><label>Digito da conta</label><input type="text" name="account_digit" value="{{ account_digit }}" required></div>
+                <div><label>Titular da conta</label><input type="text" name="account_holder_name" value="{{ account_holder_name }}" required></div>
+                <div><label>CPF do titular</label><input type="text" name="account_holder_tax_identifier" value="{{ account_holder_tax_identifier }}" required></div>
+            </div>
+            <div class="clt-actions-right"><button type="submit">Enviar Inclusao INSS</button></div>
+        </form>
+    </article>
+</section>
+
+{% if result %}
+<section class="card clt-card">
+    <h3>Resultado da Inclusao</h3>
+    <div class="c6-result-kpis">
+        <div><span>HTTP</span><strong>{{ result.status_code }}</strong></div>
+        <div><span>Status</span><strong>{{ "SUCESSO" if result.status_code == 200 else "ERRO" }}</strong></div>
+        <div><span>Acao</span><strong>INCLUSAO</strong></div>
+    </div>
+    <details class="c6-debug-box" open>
+        <summary>Ver retorno tecnico</summary>
+        <pre>{{ result | tojson(indent=2) }}</pre>
+    </details>
+</section>
+{% endif %}
+<script>
+    (function () {
+        function formatMoneyBr(rawValue) {
+            var digits = String(rawValue || "").replace(/\D/g, "");
+            if (!digits) return "";
+            var number = Number(digits) / 100;
+            return number.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        document.querySelectorAll(".money-br").forEach(function (input) {
+            input.value = formatMoneyBr(input.value);
+            input.addEventListener("input", function () {
+                input.value = formatMoneyBr(input.value);
+            });
+        });
+    })();
+</script>
+{% endblock %}

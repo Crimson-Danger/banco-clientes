@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card clt-hero">
+    <h2>Consignado Tradicional (INSS) - C6</h2>
+    <p>Area de teste para simular e incluir proposta no endpoint tradicional.</p>
+    {% if error %}
+    <p class="clt-alert"><strong>{{ error }}</strong></p>
+    {% endif %}
+    <ul>
+        <li><code>POST /marketplace/proposal/simulation</code></li>
+        <li><code>POST /marketplace/proposal</code></li>
+    </ul>
+</section>
+
+<section>
+    <article class="card clt-card">
+        <h3>Simular Proposta INSS</h3>
+        <form method="post" action="/c6-inss" class="c6-form-grid">
+            <div class="c6-section-title">Dados do Cliente</div>
+            <div class="c6-compact-grid">
+                <div><label>CPF</label><input type="text" name="tax_identifier" value="{{ tax_identifier }}" required></div>
+                <div><label>Matricula</label><input type="text" name="enrollment" value="{{ enrollment }}" minlength="10" maxlength="10" required></div>
+                <div><label>Nascimento</label><input type="text" name="birth_date" value="{{ birth_date }}" placeholder="dd/mm/aaaa" required></div>
+                <div><label>Renda</label><input type="text" name="income_amount" value="{{ income_amount }}" class="money-br" required></div>
+            </div>
+            <div class="c6-section-title">Dados da Simulacao</div>
+            <div class="c6-compact-grid">
+                <div>
+                    <label>Tipo simulacao</label>
+                    <select name="simulation_type" id="simulation_type" required>
+                        <option value="POR_VALOR_SOLICITADO" {% if simulation_type == "POR_VALOR_SOLICITADO" %}selected{% endif %}>Por valor solicitado</option>
+                        <option value="POR_VALOR_PARCELA" {% if simulation_type == "POR_VALOR_PARCELA" %}selected{% endif %}>Por valor da parcela</option>
+                    </select>
+                </div>
+                <div id="field_requested_amount"><label>Valor solicitado</label><input type="text" name="requested_amount" value="{{ requested_amount }}" class="money-br"></div>
+                <div id="field_installment_amount"><label>Valor da parcela</label><input type="text" name="installment_amount" value="{{ installment_amount }}" class="money-br"></div>
+                <div>
+                    <label>Prazo</label>
+                    <select name="installment_quantity" required>
+                        <option value="36" {% if installment_quantity|string == "36" or installment_quantity|string == "036" %}selected{% endif %}>36</option>
+                        <option value="48" {% if installment_quantity|string == "48" or installment_quantity|string == "048" %}selected{% endif %}>48</option>
+                        <option value="60" {% if installment_quantity|string == "60" or installment_quantity|string == "060" %}selected{% endif %}>60</option>
+                        <option value="72" {% if installment_quantity|string == "72" or installment_quantity|string == "072" %}selected{% endif %}>72</option>
+                        <option value="84" {% if installment_quantity|string == "84" or installment_quantity|string == "084" %}selected{% endif %}>84</option>
+                        <option value="96" {% if installment_quantity|string == "96" or installment_quantity|string == "096" %}selected{% endif %}>96</option>
+                    </select>
+                </div>
+                <div><label>Tipo operacao</label><input type="text" name="operation_type" value="{{ operation_type }}" required></div>
+                <div><label>Produto</label><input type="text" name="product_type_code" value="{{ product_type_code }}" required></div>
+                <div><label>Formalizacao</label><input type="text" name="formalization_subtype" value="{{ formalization_subtype }}" required></div>
+                <div><label>Promoter code</label><input type="text" name="promoter_code" value="{{ promoter_code }}" required></div>
+                <div><label>Covenant group</label><input type="text" name="covenant_group" value="{{ covenant_group }}" required></div>
+                <div><label>Public agency</label><input type="text" name="public_agency" value="{{ public_agency }}" required></div>
+            </div>
+            <div class="clt-actions-right"><button type="submit">Enviar Simulacao INSS</button></div>
+        </form>
+    </article>
+</section>
+
+{% if result %}
+<section class="card clt-card">
+    <h3>Resultado</h3>
+    {% set valid_conditions = simulation_conditions | selectattr("is_valid") | list %}
+    {% set invalid_conditions = simulation_conditions | rejectattr("is_valid") | list %}
+    <div class="c6-result-kpis">
+        <div><span>HTTP</span><strong>{{ result.status_code }}</strong></div>
+        <div><span>Ofertas validas</span><strong>{{ valid_conditions | length }}</strong></div>
+        <div><span>Total retornado</span><strong>{{ simulation_conditions | length }}</strong></div>
+    </div>
+    {% if valid_conditions %}
+    <div class="c6-result-section-head">
+        <h4>Ofertas disponiveis</h4>
+        <small>Ordenadas para selecao rapida</small>
+    </div>
+    <div class="table-wrap c6-result-table-wrap">
+        <table class="c6-result-table">
+            <thead>
+                <tr>
+                    <th>Status</th>
+                    <th>Convenio</th>
+                    <th>Parcela</th>
+                    <th>Prazo</th>
+                    <th>Valor Cliente</th>
+                    <th>Taxa a.m.</th>
+                    <th>Observacao</th>
+                    <th>Acao</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in valid_conditions %}
+                <tr class="is-valid">
+                    <td><span class="c6-status-badge valid">Valida</span></td>
+                    <td>{{ row.covenant_code }} - {{ row.covenant_description }}</td>
+                    <td>{% if row.installment_amount is not none %}R$ {{ "{:,.2f}".format(row.installment_amount).replace(",", "X").replace(".", ",").replace("X", ".") }}{% else %}-{% endif %}</td>
+                    <td>{{ row.installment_quantity }}</td>
+                    <td>{% if row.client_amount is not none %}R$ {{ "{:,.2f}".format(row.client_amount).replace(",", "X").replace(".", ",").replace("X", ".") }}{% else %}-{% endif %}</td>
+                    <td>{{ row.monthly_customer_rate if row.monthly_customer_rate is not none else "-" }}</td>
+                    <td>{{ row.observation or "-" }}</td>
+                    <td class="c6-action-cell">
+                        {% if row.select_url %}
+                        <a class="top-action c6-select-btn" href="{{ row.select_url }}">Selecionar</a>
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if invalid_conditions %}
+    <details class="c6-result-collapsible">
+        <summary>Ofertas indisponiveis ({{ invalid_conditions | length }})</summary>
+        <div class="table-wrap c6-result-table-wrap">
+            <table class="c6-result-table">
+                <thead>
+                    <tr>
+                        <th>Status</th>
+                        <th>Convenio</th>
+                        <th>Motivo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in invalid_conditions %}
+                    <tr class="is-invalid">
+                        <td><span class="c6-status-badge invalid">Indisponivel</span></td>
+                        <td>{{ row.covenant_code }} - {{ row.covenant_description }}</td>
+                        <td>{{ row.observation or "Sem detalhe de restricao." }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </details>
+    {% endif %}
+    {% if continue_url %}
+    <p class="c6-result-actions"><a class="top-action" href="{{ continue_url }}">Continuar para Inclusao</a></p>
+    {% endif %}
+</section>
+{% endif %}
+<script>
+    (function () {
+        function formatMoneyBr(rawValue) {
+            var digits = String(rawValue || "").replace(/\D/g, "");
+            if (!digits) return "";
+            var number = Number(digits) / 100;
+            return number.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function normalizeMoneyField(input) {
+            if (!input) return;
+            input.value = formatMoneyBr(input.value);
+            input.addEventListener("input", function () {
+                input.value = formatMoneyBr(input.value);
+            });
+        }
+
+        document.querySelectorAll(".money-br").forEach(normalizeMoneyField);
+
+        var simulationType = document.getElementById("simulation_type");
+        var requestedWrap = document.getElementById("field_requested_amount");
+        var installmentWrap = document.getElementById("field_installment_amount");
+        var requestedInput = requestedWrap ? requestedWrap.querySelector("input") : null;
+        var installmentInput = installmentWrap ? installmentWrap.querySelector("input") : null;
+
+        function applySimulationLayout() {
+            if (!simulationType || !requestedWrap || !installmentWrap || !requestedInput || !installmentInput) return;
+            var isParcela = simulationType.value === "POR_VALOR_PARCELA";
+            requestedWrap.style.display = isParcela ? "none" : "block";
+            installmentWrap.style.display = isParcela ? "block" : "none";
+            requestedInput.required = !isParcela;
+            installmentInput.required = isParcela;
+        }
+
+        if (simulationType) {
+            simulationType.addEventListener("change", applySimulationLayout);
+            applySimulationLayout();
+        }
+    })();
+</script>
+{% endblock %}

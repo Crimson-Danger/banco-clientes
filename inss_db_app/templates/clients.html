@@ -55,6 +55,7 @@
                     <input type="hidden" name="has_phone" value="{% if filters.has_phone == true %}sim{% elif filters.has_phone == false %}nao{% endif %}">
                     <input type="hidden" name="source_file" value="{{ filters.source_file }}">
                     <input type="hidden" name="cpf" value="{{ filters.cpf }}">
+                    <input type="hidden" name="selected_occurrence_id" value="{{ selected_occurrence_id }}">
                     <input type="hidden" name="phone" value="{{ filters.phone }}">
                     <input type="hidden" name="ddd" value="{{ filters.ddd }}">
                     <input type="hidden" name="name" value="{{ filters.name }}">
@@ -89,6 +90,7 @@
     </div>
 </section>
 
+{% if has_active_lookup %}
 <section class="consult-grid">
     <article class="card consult-card consult-results">
         <details class="consult-results-toggle" {% if result_count and result_count <= 5 %}open{% endif %}>
@@ -117,7 +119,7 @@
                         {% for row in results %}
                             {% if selected_base_segment == "INSS" %}
                             <tr>
-                                <td><a href="/clients/{{ row.cpf }}" class="inline-link">{{ row.nome }}</a></td>
+                                <td><a href="/clients/{{ row.cpf }}/benefits" class="inline-link">{{ row.nome }}</a></td>
                                 <td>{{ row.cpf }}</td>
                                 <td>{{ row.base_segment }}</td>
                                 <td>{{ row.telefone | phone_br }}</td>
@@ -171,6 +173,47 @@
         </details>
     </article>
 </section>
+{% endif %}
+
+{% if selected_base_segment == "INSS" and inss_benefit_choices|length > 1 %}
+<section class="consult-grid">
+    <article class="card consult-card consult-results">
+        <div class="consult-card-head">
+            <h3>Selecionar Beneficio</h3>
+            <span class="consult-icon">#</span>
+        </div>
+        <div class="consult-results-body">
+            <div class="consult-results-note">
+                <strong>Mais de um beneficio encontrado para este CPF</strong>
+                <span>Escolha abaixo qual registro voce quer consultar para carregar os dados e a simulacao.</span>
+            </div>
+            <div class="consult-table-wrap">
+                <table class="consult-table">
+                    <thead>
+                        <tr><th>Beneficio</th><th>Especie</th><th>Significado</th><th>DDB</th><th>Referencia</th><th>Acao</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for item in inss_benefit_choices %}
+                        <tr>
+                            <td>{{ item.benefit }}</td>
+                            <td>{{ item.species }}</td>
+                            <td>{{ item.species_meaning or "-" }}</td>
+                            <td>{{ item.ddb }}</td>
+                            <td>{{ item.reference }}</td>
+                            <td>
+                                <a class="consult-action inline" href="/clients?{{ selection_query }}&selected_occurrence_id={{ item.occurrence_id }}">
+                                    Consultar
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </article>
+</section>
+{% endif %}
 
 <section class="consult-secondary-grid">
     <article class="card consult-card consult-profile">
@@ -204,7 +247,16 @@
             <p><strong>UF:</strong> {{ highlight.uf or 'Nao informado' }}</p>
             {% endif %}
         </div>
-        <p><a href="/clients/{{ highlight.cpf }}" class="inline-link">Abrir tela completa do cliente</a></p>
+        <p>
+            <a
+                href="{% if selected_base_segment == 'INSS' %}/clients/{{ highlight.cpf }}/benefits{% else %}/clients/{{ highlight.cpf }}{% endif %}"
+                class="inline-link"
+            >
+                Abrir tela completa do cliente
+            </a>
+        </p>
+        {% elif selected_base_segment == "INSS" and inss_benefit_choices|length > 1 %}
+        <p class="muted">Selecione um beneficio acima para carregar os dados principais e a area de simulacao.</p>
         {% else %}
         <p class="muted">Nenhum cliente localizado com os filtros atuais.</p>
         {% endif %}
@@ -257,6 +309,8 @@
                 </div>
             </button>
         </div>
+        {% elif inss_benefit_choices|length > 1 %}
+        <p class="muted">Acoes rapidas ficam disponiveis depois da selecao do beneficio.</p>
         {% else %}
         <p class="muted">Nenhum cliente selecionado.</p>
         {% endif %}
@@ -313,7 +367,7 @@
     {% endif %}
 
 </section>
-{% if selected_base_segment == "INSS" %}
+{% if selected_base_segment == "INSS" and (highlight or inss_benefit_choices|length <= 1) %}
 <section class="consult-simulator-section">
     <article class="card consult-card consult-simulator-card consult-simulator-card--full">
         <div class="consult-card-head">

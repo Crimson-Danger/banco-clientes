@@ -64,8 +64,49 @@ class C6WorkerLoanClient:
             return str(self._token)
         return self._refresh_token()
 
+    @staticmethod
+    def _digits(value: Any) -> str:
+        return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+    def _normalize_worker_payload(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+
+        if path == "/marketplace/worker-payroll-loan-offers":
+            cpf = normalized.get("cpf_cliente") or normalized.get("cpf")
+            cpf_digits = self._digits(cpf)
+            if not cpf_digits:
+                raise C6WorkerLoanError("Payload invalido para oferta: informe cpf_cliente.")
+            normalized["cpf_cliente"] = cpf_digits
+            normalized.pop("cpf", None)
+            return normalized
+
+        if path == "/marketplace/worker-payroll-loan-offers/simulation":
+            cpf = normalized.get("cpf") or normalized.get("cpf_cliente")
+            cpf_digits = self._digits(cpf)
+            if not cpf_digits:
+                raise C6WorkerLoanError("Payload invalido para simulacao: informe cpf.")
+            if not str(normalized.get("tipo_simulacao", "")).strip():
+                raise C6WorkerLoanError("Payload invalido para simulacao: informe tipo_simulacao.")
+            normalized["cpf"] = cpf_digits
+            normalized.pop("cpf_cliente", None)
+            return normalized
+
+        if path == "/marketplace/worker-payroll-loan-offers/include":
+            cpf = normalized.get("cpf") or normalized.get("cpf_cliente")
+            cpf_digits = self._digits(cpf)
+            if not cpf_digits:
+                raise C6WorkerLoanError("Payload invalido para inclusao: informe cpf.")
+            if not str(normalized.get("id_simulacao", "")).strip():
+                raise C6WorkerLoanError("Payload invalido para inclusao: informe id_simulacao.")
+            normalized["cpf"] = cpf_digits
+            normalized.pop("cpf_cliente", None)
+            return normalized
+
+        return normalized
+
     def _request(self, path: str, accept: str, payload: dict[str, Any]) -> C6Response:
         self._require_enabled()
+        payload = self._normalize_worker_payload(path, payload)
         headers = {
             "Accept": accept,
             "Content-Type": "application/json",
@@ -109,6 +150,34 @@ class C6WorkerLoanClient:
         return self._request(
             path="/marketplace/worker-payroll-loan-offers/include",
             accept="application/vnd.c6bank_include_proposal_v1+json",
+            payload=payload,
+        )
+
+    def generate_authorization_liveness(self, payload: dict[str, Any]) -> C6Response:
+        return self._request(
+            path="/marketplace/authorization/generate-liveness",
+            accept="application/vnd.c6bank_authorization_generate_liveness_v1+json",
+            payload=payload,
+        )
+
+    def authorization_status(self, payload: dict[str, Any]) -> C6Response:
+        return self._request(
+            path="/marketplace/authorization/status",
+            accept="application/vnd.c6bank_authorization_status_v1+json",
+            payload=payload,
+        )
+
+    def simulate_inss_proposal(self, payload: dict[str, Any]) -> C6Response:
+        return self._request(
+            path="/marketplace/proposal/simulation",
+            accept="application/vnd.c6bank_error_data_v2+json",
+            payload=payload,
+        )
+
+    def include_inss_proposal(self, payload: dict[str, Any]) -> C6Response:
+        return self._request(
+            path="/marketplace/proposal",
+            accept="application/vnd.c6bank_error_data_v2+json",
             payload=payload,
         )
 

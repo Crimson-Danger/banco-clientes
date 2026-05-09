@@ -1,0 +1,607 @@
+/* Soft dark theme - neutral and high readability */
+:root {
+  --dark-bg-0: #11151b;
+  --dark-bg-1: #171c24;
+  --dark-bg-2: #202734;
+  --dark-bg-3: #2a3342;
+  --dark-border: #2f3a4c;
+  --dark-border-soft: #273244;
+  --dark-text-1: #e7edf7;
+  --dark-text-2: #b7c1d0;
+  --dark-text-3: #8f9cb1;
+  --dark-primary: #69a8ef;
+  --dark-primary-hover: #7eb6f4;
+  --dark-danger: #d98181;
+  --dark-success: #61c5a4;
+  --dark-surface-elev: #1b2230;
+  --focus-ring: 0 0 0 3px rgba(105, 168, 239, 0.28);
+}
+
+body,
+.page,
+.main-shell,
+.app-shell {
+  background: linear-gradient(180deg, #0f141b 0%, #121923 100%) !important;
+  color: var(--dark-text-1) !important;
+}
+
+h1, h2, h3, h4, h5, h6,
+strong,
+.topbar h1,
+.section-head h2,
+.consult-hero-body h2,
+.history-entry-head h3,
+.ua-header h2,
+.card h2,
+.card h3 {
+  color: var(--dark-text-1) !important;
+}
+
+p,
+span,
+label,
+small,
+.muted,
+.topbar p,
+.section-head p,
+.consult-kicker,
+.consult-head-note,
+.history-entry-kicker,
+.filter-block-head p,
+.builder-tips li,
+.builder-main .muted,
+.users-audit-card p {
+  color: var(--dark-text-2) !important;
+}
+
+.sidebar,
+.topbar,
+.card,
+.filter-block,
+.builder-main,
+.builder-side,
+.public-update-section,
+.consult-card,
+.consult-hero,
+.consult-segment-switch,
+.consult-summary-strip,
+.consult-simulator-card,
+.consult-sim-banner,
+.consult-sim-modebar,
+.consult-sim-panel,
+.consult-filter-drawer,
+.consult-filter-drawer-panel,
+.consult-results-note,
+.consult-table-wrap,
+.consult-card-slot,
+.consult-card-slot-section,
+.consult-card-ranking-item,
+.consult-sim-offer,
+.history-hero-card,
+.history-entry,
+.history-entry-metric,
+.pagination-card,
+.summary-pill,
+.dashboard-segment-card,
+.dashboard-kpi-card,
+.dashboard-metric-card,
+.dashboard-activity-card,
+.ua-panel,
+.ua-table-wrap,
+.ua-modal-dialog,
+.ua-inline-form,
+.ua-kpi,
+.users-audit-card,
+.user-chip,
+.stat-box,
+.consult-card-result,
+.consult-sim-metric,
+.campaign-filter-card,
+.campaign-species-card,
+.campaign-output-card,
+.campaign-enrichment-card,
+.export-job-card,
+.export-history-card,
+.login-card,
+.feedback-card,
+.empty-state-card,
+.consult-bank-logo-preview,
+.builder-tips {
+  background: var(--dark-bg-1) !important;
+  color: var(--dark-text-1) !important;
+  border-color: var(--dark-border) !important;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24) !important;
+}
+
+.consult-hero,
+.history-hero-card,
+.dashboard-hero,
+.export-job-card,
+.public-update-section,
+.builder-main,
+.ua-panel {
+  background: linear-gradient(180deg, #18202c 0%, #141b25 100%) !important;
+}
+
+.consult-hero-bar,
+.consult-card-head,
+.history-hero-card .page-kicker,
+.topbar .top-action,
+.dashboard-card-kicker,
+.dashboard-kicker {
+  color: #eef4ff !important;
+}
+
+.consult-hero-bar,
+.consult-rmc-hero-bar,
+.dashboard-hero,
+.history-hero-card,
+.card.dashboard-hero {
+  border-color: #2c3f5c !important;
+}
+
+.segment-tab,
+.summary-pill,
+.history-hero-metric,
+.history-entry-metric,
+.builder-tips,
+.consult-sim-result,
+.consult-card-result,
+.consult-sim-metric,
+.ua-kpi,
+.profile-kpi,
+.dashboard-summary-card,
+.dashboard-contact-card {
+  background: var(--dark-surface-elev) !important;
+  border-color: var(--dark-border-soft) !important;
+  color: var(--dark-text-1) !important;
+}
+
+.segment-tab span,
+.segment-tab small,
+.summary-pill span,
+.history-hero-metric span,
+.history-entry-metric span,
+.ua-kpi span,
+.profile-kpi span,
+.consult-card-result span,
+.consult-sim-metric span {
+  color: var(--dark-text-3) !important;
+}
+
+.segment-tab strong,
+.summary-pill strong,
+.history-hero-metric strong,
+.history-entry-metric strong,
+.ua-kpi strong,
+.profile-kpi strong,
+.consult-card-result strong,
+.consult-sim-metric strong {
+  color: var(--dark-text-1) !important;
+}
+
+.nav-link,
+.nav-link:hover,
+.nav-link.is-active,
+.chip,
+.dashboard-note,
+.users-permission-pill span,
+.users-secondary-action,
+.top-action.ghost,
+.consult-action.ghost,
+.consult-sim-mode,
+.ua-btn-ghost,
+.species-chip {
+  background: var(--dark-bg-2) !important;
+  color: var(--dark-text-1) !important;
+  border-color: var(--dark-border) !important;
+}
+
+.nav-link.is-active,
+.segment-tab.active,
+.consult-sim-mode.is-active {
+  background: #263249 !important;
+  border-color: #3b4b66 !important;
+}
+
+.nav-icon,
+.dashboard-side-value,
+.count-pill,
+.status-pill,
+.dashboard-count-pill,
+.dashboard-status-pill,
+.ua-tag,
+.ua-badge,
+.consult-sim-offer-rank,
+.consult-card-slot-tag,
+.consult-card-slot-status,
+.consult-card-rule-badge,
+.filter-step {
+  background: #26344a !important;
+  color: #d4e3fb !important;
+  border-color: #3c4d6a !important;
+}
+
+input,
+select,
+textarea,
+button,
+.users-search-box input,
+.ua-search input,
+.c6-form-grid input,
+.c6-form-grid select,
+.consult-search-form input[type="text"],
+.consult-sim-input,
+.consult-card-slot-grid label input,
+.consult-card-slot-grid label select,
+.consult-sim-grid label input,
+.consult-sim-grid label select {
+  background: var(--dark-bg-2) !important;
+  color: var(--dark-text-1) !important;
+  border-color: var(--dark-border) !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--dark-text-3) !important;
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+button:focus-visible,
+a:focus-visible {
+  outline: none !important;
+  box-shadow: var(--focus-ring) !important;
+  border-color: #6ba9ef !important;
+}
+
+.top-action,
+.consult-action,
+.primary-wide,
+.secondary-wide,
+.campaign-submit,
+.users-primary-action,
+.users-save-action,
+.ua-btn-primary,
+.consult-search-form button,
+.consult-filter-actions button,
+button.consult-link-item {
+  background: var(--dark-primary) !important;
+  color: #0f1722 !important;
+  border-color: transparent !important;
+  box-shadow: 0 8px 18px rgba(46, 96, 160, 0.28) !important;
+}
+
+.top-action:hover,
+.consult-action:hover,
+.primary-wide:hover,
+.secondary-wide:hover,
+.campaign-submit:hover,
+.users-primary-action:hover,
+.users-save-action:hover,
+.ua-btn-primary:hover,
+.consult-search-form button:hover,
+.consult-filter-actions button:hover,
+button.consult-link-item:hover {
+  background: var(--dark-primary-hover) !important;
+}
+
+.danger-button,
+.ua-badge-inactive,
+.consult-quick-dnc-form .danger-button {
+  background: var(--dark-danger) !important;
+  color: #251114 !important;
+  border-color: transparent !important;
+}
+
+.success {
+  background: rgba(97, 197, 164, 0.14) !important;
+  color: #b9f0db !important;
+  border-color: rgba(97, 197, 164, 0.44) !important;
+}
+
+.error {
+  background: rgba(217, 129, 129, 0.16) !important;
+  color: #ffd8d8 !important;
+  border-color: rgba(217, 129, 129, 0.46) !important;
+}
+
+table,
+.ua-table,
+.consult-table {
+  color: var(--dark-text-1) !important;
+  border-color: var(--dark-border) !important;
+}
+
+.table-scroll-shell thead th,
+.consult-table thead th,
+.campaign-enrichment-table thead th,
+.ua-table th,
+.users-audit-card thead th,
+.history-detail-table thead th {
+  background: var(--dark-bg-2) !important;
+  color: #cfd9ea !important;
+  border-color: var(--dark-border) !important;
+}
+
+.table-scroll-shell tbody tr:nth-child(even),
+.consult-table tbody tr:nth-child(even),
+.campaign-enrichment-table tbody tr:nth-child(even),
+.ua-table tbody tr:nth-child(even),
+.users-audit-card tbody tr:nth-child(even),
+.history-detail-table tbody tr:nth-child(even) {
+  background: #1a2230 !important;
+}
+
+.table-scroll-shell tbody tr:hover,
+.consult-table tbody tr:hover,
+.campaign-enrichment-table tbody tr:hover,
+.ua-table tbody tr:hover,
+.users-audit-card tbody tr:hover,
+.history-detail-table tbody tr:hover,
+.consult-link-item:hover,
+.consult-card-ranking-item:hover,
+.consult-sim-offer:hover {
+  background: #232c3b !important;
+}
+
+a,
+.inline-link,
+.consult-result-link,
+.consult-link-main strong {
+  color: #9fc4f7 !important;
+}
+
+a:hover,
+.inline-link:hover,
+.consult-result-link:hover {
+  color: #b3d2fb !important;
+}
+
+/* file input / native controls */
+input[type="file"] {
+  background: var(--dark-bg-2) !important;
+  color: var(--dark-text-2) !important;
+  border-color: var(--dark-border) !important;
+}
+
+input[type="file"]::file-selector-button {
+  background: #2a3951;
+  color: #dce8fa;
+  border: 1px solid #415676;
+}
+
+/* Final neutralization for campaign builder surfaces */
+.campaign-hero-body,
+.campaign-filter-card,
+.campaign-pane,
+.campaign-note,
+.campaign-output-card,
+.campaign-species-card,
+.campaign-side .card,
+.campaign-main .card,
+.campaign-section,
+.campaign-side-group,
+.campaign-multi-select summary,
+.campaign-multi-select-panel,
+.field-prefix span,
+.summary-pill,
+.history-entry-metric,
+.history-hero-metric {
+  background: var(--dark-surface-elev) !important;
+  background-image: none !important;
+  border-color: var(--dark-border-soft) !important;
+  color: var(--dark-text-1) !important;
+}
+
+.campaign-hero-bar {
+  background: linear-gradient(90deg, #365da0 0%, #4f79bf 100%) !important;
+}
+
+.campaign-kicker,
+.campaign-section-label,
+.campaign-filter-card-label,
+.campaign-helper-text,
+.campaign-note p,
+.campaign-field,
+.campaign-field label,
+.campaign-field-month,
+.campaign-note strong {
+  color: var(--dark-text-2) !important;
+}
+
+.campaign-hero-body h2,
+.campaign-section-head h3,
+.campaign-side h2,
+.campaign-side h3,
+.campaign-note strong,
+.campaign-filter-card strong,
+.campaign-pane h4 {
+  color: var(--dark-text-1) !important;
+}
+
+.campaign-field input,
+.campaign-field select,
+.field-prefix,
+.field-prefix input,
+.field-prefix span,
+.campaign-inline-field input,
+.campaign-multi-select summary,
+.campaign-file-input {
+  background: var(--dark-bg-2) !important;
+  border-color: var(--dark-border) !important;
+  color: var(--dark-text-1) !important;
+}
+
+.campaign-field input::placeholder,
+.campaign-inline-field input::placeholder,
+.campaign-file-input::placeholder {
+  color: var(--dark-text-3) !important;
+}
+
+.campaign-pill,
+.uf-chip-button,
+.uf-quick-button,
+.species-fixed-chip span {
+  background: var(--dark-bg-2) !important;
+  color: var(--dark-text-1) !important;
+  border-color: var(--dark-border) !important;
+}
+
+.campaign-pill.active,
+.uf-chip-button.active,
+.uf-quick-button.active,
+.species-fixed-chip input:checked + span {
+  background: #2f4f7e !important;
+  border-color: #4c6da0 !important;
+  color: #eaf2ff !important;
+  box-shadow: none !important;
+}
+
+.campaign-submit,
+.campaign-side .top-action,
+.campaign-inline-actions .top-action,
+.campaign-side-group .top-action {
+  background: var(--dark-primary) !important;
+  color: #0f1722 !important;
+  border-color: transparent !important;
+}
+
+.campaign-submit:hover,
+.campaign-side .top-action:hover,
+.campaign-inline-actions .top-action:hover,
+.campaign-side-group .top-action:hover {
+  background: var(--dark-primary-hover) !important;
+}
+
+/* keep white text readable in tiny labels */
+.page-kicker,
+.history-entry-kicker,
+.campaign-kicker,
+.segment-tab-kicker {
+  letter-spacing: 0.08em;
+}
+
+/* Fix gray strip in simulation header */
+.consult-sim-panel,
+.consult-sim-panel-head,
+.consult-sim-banner,
+.consult-rmc-hero,
+.consult-sim-ranking,
+.consult-sim-result {
+  background: var(--dark-surface-elev) !important;
+  background-image: none !important;
+  border-color: var(--dark-border-soft) !important;
+  color: var(--dark-text-1) !important;
+}
+
+.consult-sim-panel-kicker,
+.consult-sim-panel-head p,
+.consult-sim-check,
+.consult-sim-banner small,
+.consult-sim-result small {
+  color: var(--dark-text-2) !important;
+}
+
+.consult-sim-panel-head h4,
+.consult-sim-banner .consult-sim-margin,
+.consult-sim-result strong {
+  color: var(--dark-text-1) !important;
+}
+
+.consult-sim-input.is-locked {
+  background: var(--dark-bg-2) !important;
+  border-color: var(--dark-border) !important;
+  color: var(--dark-text-1) !important;
+}
+
+/* C6 error notification readability */
+.clt-alert,
+.clt-alert-compact,
+.clt-hero .clt-alert,
+.clt-card .clt-alert,
+p.clt-alert {
+  background: rgba(217, 129, 129, 0.18) !important;
+  border: 1px solid rgba(217, 129, 129, 0.52) !important;
+  color: #ffdede !important;
+}
+
+.clt-alert strong,
+.clt-alert-compact strong {
+  color: #ffe8e8 !important;
+}
+
+.clt-alert code,
+.clt-alert-compact code {
+  color: #ffd4d4 !important;
+}
+
+/* C6 result screen - dark harmonization */
+.c6-result-kpis div,
+.c6-result-section-head,
+.c6-result-table-wrap,
+.c6-result-collapsible,
+.c6-result-collapsible summary,
+.c6-best-offer-row,
+.c6-api-note,
+.c6-result-actions,
+.c6-result-table,
+.c6-result-table tbody tr,
+.c6-result-table tbody tr.is-valid,
+.c6-result-table tbody tr.is-invalid {
+  background: var(--dark-surface-elev) !important;
+  background-image: none !important;
+  border-color: var(--dark-border-soft) !important;
+  color: var(--dark-text-1) !important;
+}
+
+.c6-result-kpis span,
+.c6-result-section-head small,
+.c6-api-note,
+.c6-result-table td,
+.c6-result-table th {
+  color: var(--dark-text-2) !important;
+}
+
+.c6-result-kpis strong,
+.c6-result-section-head h4,
+.c6-result-table td strong,
+.c6-result-actions a,
+.c6-result-table .c6-action-cell {
+  color: var(--dark-text-1) !important;
+}
+
+.c6-result-table thead th {
+  background: var(--dark-bg-2) !important;
+  color: #d2dced !important;
+  border-color: var(--dark-border) !important;
+}
+
+.c6-result-table tbody tr:nth-child(even) {
+  background: #1a2230 !important;
+}
+
+.c6-result-table tbody tr:hover,
+.c6-result-table tbody tr.is-valid:hover,
+.c6-result-table tbody tr.is-invalid:hover {
+  background: #232c3b !important;
+}
+
+.c6-status-badge.valid {
+  background: rgba(97, 197, 164, 0.18) !important;
+  border-color: rgba(97, 197, 164, 0.42) !important;
+  color: #c5f3e2 !important;
+}
+
+.c6-status-badge.invalid {
+  background: rgba(217, 129, 129, 0.18) !important;
+  border-color: rgba(217, 129, 129, 0.42) !important;
+  color: #ffdada !important;
+}
+
+.c6-offer-badge {
+  background: #2a3951 !important;
+  color: #d8e7ff !important;
+  border-color: #425979 !important;
+}
