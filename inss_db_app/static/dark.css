@@ -605,3 +605,29 @@ p.clt-alert {
   color: #d8e7ff !important;
   border-color: #425979 !important;
 }
+
+/* Client detail page - dark harmony */
+.client-view-panel,
+.client-view-history-panel,
+.client-view-subpanel {
+  background: var(--dark-surface-elev) !important;
+  background-image: none !important;
+  border-color: var(--dark-border-soft) !important;
+  color: var(--dark-text-1) !important;
+}
+
+.client-view-subpanel h4,
+.client-view-panel-head h3,
+.client-view-info-item strong {
+  color: var(--dark-text-1) !important;
+}
+
+.client-view-section-kicker,
+.client-view-info-item span,
+.client-view-history-table small {
+  color: var(--dark-text-2) !important;
+}
+
+.client-view-info-item {
+  border-bottom-color: #314055 !important;
+}

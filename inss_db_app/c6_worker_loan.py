@@ -42,6 +42,7 @@ class C6WorkerLoanClient:
         with self._lock:
             if self._token_is_valid():
                 return str(self._token)
+
             response = httpx.post(
                 f"{settings.c6_base_url}/auth/token",
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -54,6 +55,7 @@ class C6WorkerLoanClient:
             expires = int(payload.get("expires_in_seconds", 0) or 0)
             if not token:
                 raise C6WorkerLoanError("Token C6 vazio na autenticacao.")
+            # Evita expirar durante uma requisicao em andamento.
             refresh_window = max(30, min(120, expires // 10))
             self._token = token
             self._token_expires_at = datetime.now(UTC) + timedelta(seconds=max(1, expires - refresh_window))
@@ -70,9 +72,13 @@ class C6WorkerLoanClient:
 
     def _normalize_worker_payload(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
+        client_payload = normalized.get("client")
+        client_tax_identifier = ""
+        if isinstance(client_payload, dict):
+            client_tax_identifier = self._digits(client_payload.get("tax_identifier"))
 
         if path == "/marketplace/worker-payroll-loan-offers":
-            cpf = normalized.get("cpf_cliente") or normalized.get("cpf")
+            cpf = normalized.get("cpf_cliente") or normalized.get("cpf") or client_tax_identifier
             cpf_digits = self._digits(cpf)
             if not cpf_digits:
                 raise C6WorkerLoanError("Payload invalido para oferta: informe cpf_cliente.")
@@ -81,10 +87,18 @@ class C6WorkerLoanClient:
             return normalized
 
         if path == "/marketplace/worker-payroll-loan-offers/simulation":
-            cpf = normalized.get("cpf") or normalized.get("cpf_cliente")
+            cpf = normalized.get("cpf") or normalized.get("cpf_cliente") or client_tax_identifier
             cpf_digits = self._digits(cpf)
             if not cpf_digits:
                 raise C6WorkerLoanError("Payload invalido para simulacao: informe cpf.")
+            if "instalment_amount" not in normalized and "installment_amount" in normalized:
+                normalized["instalment_amount"] = normalized.get("installment_amount")
+            if "instalment_quantity" not in normalized and "installment_quantity" in normalized:
+                normalized["instalment_quantity"] = normalized.get("installment_quantity")
+            if not str(normalized.get("tipo_simulacao", "")).strip():
+                simulation_type = str(normalized.get("simulation_type", "")).strip()
+                if simulation_type:
+                    normalized["tipo_simulacao"] = simulation_type
             if not str(normalized.get("tipo_simulacao", "")).strip():
                 raise C6WorkerLoanError("Payload invalido para simulacao: informe tipo_simulacao.")
             normalized["cpf"] = cpf_digits
@@ -107,10 +121,11 @@ class C6WorkerLoanClient:
     def _request(self, path: str, accept: str, payload: dict[str, Any]) -> C6Response:
         self._require_enabled()
         payload = self._normalize_worker_payload(path, payload)
+        token = self._auth_token()
         headers = {
             "Accept": accept,
             "Content-Type": "application/json",
-            "Authorization": self._auth_token(),
+            "Authorization": token,
         }
         try:
             response = httpx.post(
@@ -122,8 +137,37 @@ class C6WorkerLoanClient:
         except httpx.HTTPError as exc:
             raise C6WorkerLoanError(f"Falha de comunicacao com C6: {exc}") from exc
 
+        parsed: dict[str, Any] | list[Any] | str
         try:
-            parsed: dict[str, Any] | list[Any] | str = response.json()
+            parsed = response.json()
+        except ValueError:
+            parsed = response.text
+
+        if response.status_code >= 400:
+            raise C6WorkerLoanError(f"C6 retornou erro HTTP {response.status_code}: {parsed}")
+        return C6Response(status_code=response.status_code, payload=parsed)
+
+    def _request_traditional(self, path: str, accept: str, payload: dict[str, Any]) -> C6Response:
+        self._require_enabled()
+        token = self._auth_token()
+        headers = {
+            "Accept": accept,
+            "Content-Type": "application/json",
+            "Authorization": token,
+        }
+        try:
+            response = httpx.post(
+                f"{settings.c6_base_url}{path}",
+                headers=headers,
+                json=payload,
+                timeout=settings.c6_timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            raise C6WorkerLoanError(f"Falha de comunicacao com C6: {exc}") from exc
+
+        parsed: dict[str, Any] | list[Any] | str
+        try:
+            parsed = response.json()
         except ValueError:
             parsed = response.text
 
@@ -153,29 +197,15 @@ class C6WorkerLoanClient:
             payload=payload,
         )
 
-    def generate_authorization_liveness(self, payload: dict[str, Any]) -> C6Response:
-        return self._request(
-            path="/marketplace/authorization/generate-liveness",
-            accept="application/vnd.c6bank_authorization_generate_liveness_v1+json",
-            payload=payload,
-        )
-
-    def authorization_status(self, payload: dict[str, Any]) -> C6Response:
-        return self._request(
-            path="/marketplace/authorization/status",
-            accept="application/vnd.c6bank_authorization_status_v1+json",
-            payload=payload,
-        )
-
     def simulate_inss_proposal(self, payload: dict[str, Any]) -> C6Response:
-        return self._request(
+        return self._request_traditional(
             path="/marketplace/proposal/simulation",
             accept="application/vnd.c6bank_error_data_v2+json",
             payload=payload,
         )
 
     def include_inss_proposal(self, payload: dict[str, Any]) -> C6Response:
-        return self._request(
+        return self._request_traditional(
             path="/marketplace/proposal",
             accept="application/vnd.c6bank_error_data_v2+json",
             payload=payload,

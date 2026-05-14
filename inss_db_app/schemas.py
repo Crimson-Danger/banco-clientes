@@ -20,6 +20,8 @@ class ImportSummary:
     rows_without_phone: int = 0
     rows_without_city: int = 0
     validation_errors: list[str] = field(default_factory=list)
+    row_errors: int = 0
+    error_report_file: str = ""
 
 
 @dataclass

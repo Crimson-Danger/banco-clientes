@@ -30,26 +30,26 @@
                 </div>
             </div>
             <nav class="sidebar-nav">
-                {% set current_path = request.url.path %}
                 {% if permissions.can_view_dashboard %}
-                <a href="/" class="nav-link{% if current_path == '/' %} is-active{% endif %}"><span class="nav-icon">HM</span><span>Inicio</span></a>
+                <a href="/" class="nav-link{% if active_nav == 'home' %} is-active{% endif %}"><span class="nav-icon">HM</span><span>Inicio</span></a>
                 {% endif %}
                 {% if permissions.can_import %}
-                <a href="/import" class="nav-link{% if current_path.startswith('/import') %} is-active{% endif %}"><span class="nav-icon">IM</span><span>Importacao</span></a>
+                <a href="/import" class="nav-link{% if active_nav == 'import' %} is-active{% endif %}"><span class="nav-icon">IM</span><span>Importacao</span></a>
                 {% endif %}
                 {% if permissions.can_search %}
-                <a href="/clients" class="nav-link{% if current_path.startswith('/clients') %} is-active{% endif %}"><span class="nav-icon">SG</span><span>Segmentacao</span></a>
-                <a href="/c6-inss" class="nav-link{% if current_path.startswith('/c6-inss') %} is-active{% endif %}"><span class="nav-icon">IN</span><span>Consignado INSS</span></a>
-                <a href="/c6-worker" class="nav-link{% if current_path.startswith('/c6-worker') %} is-active{% endif %}"><span class="nav-icon">C6</span><span>Consignado Trabalhador</span></a>
+                <a href="/clients" class="nav-link{% if active_nav == 'clients' %} is-active{% endif %}"><span class="nav-icon">SG</span><span>Segmentacao</span></a>
+                {% endif %}
+                {% if permissions.can_access_consignado_inss %}
+                <a href="/c6-inss" class="nav-link{% if active_nav == 'c6' %} is-active{% endif %}"><span class="nav-icon">C6</span><span>Consignado INSS</span></a>
                 {% endif %}
                 {% if permissions.can_export %}
-                <a href="/exports" class="nav-link{% if current_path.startswith('/exports') %} is-active{% endif %}"><span class="nav-icon">EX</span><span>Listas</span></a>
+                <a href="/exports" class="nav-link{% if active_nav == 'exports' %} is-active{% endif %}"><span class="nav-icon">EX</span><span>Listas</span></a>
                 {% endif %}
                 {% if permissions.can_view_history %}
-                <a href="/history" class="nav-link{% if current_path.startswith('/history') %} is-active{% endif %}"><span class="nav-icon">HS</span><span>Historico</span></a>
+                <a href="/history" class="nav-link{% if active_nav == 'history' %} is-active{% endif %}"><span class="nav-icon">HS</span><span>Historico</span></a>
                 {% endif %}
                 {% if permissions.can_manage_users %}
-                <a href="/users" class="nav-link{% if current_path.startswith('/users') %} is-active{% endif %}"><span class="nav-icon">US</span><span>Usuarios</span></a>
+                <a href="/users" class="nav-link{% if active_nav == 'users' %} is-active{% endif %}"><span class="nav-icon">US</span><span>Usuarios</span></a>
                 {% endif %}
             </nav>
         </aside>

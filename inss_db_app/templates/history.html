@@ -55,6 +55,11 @@
             </div>
             <div class="history-entry-actions">
                 <a href="/history/{{ batch.id }}" class="top-action">Ver detalhes</a>
+                {% if batch.status in ["PENDENTE", "PROCESSANDO"] %}
+                <form method="post" action="/history/{{ batch.id }}/cancel" onsubmit="return confirm('Cancelar o lote {{ batch.id }} em execucao?');">
+                    <button type="submit" class="danger-button">Cancelar lote</button>
+                </form>
+                {% endif %}
                 <form method="post" action="/history/{{ batch.id }}/delete" onsubmit="return confirm('Apagar a campanha {{ batch.id }}?');">
                     <button type="submit" class="danger-button">Apagar lote</button>
                 </form>

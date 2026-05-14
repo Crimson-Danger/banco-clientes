@@ -1,44 +1,42 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from contextlib import asynccontextmanager
-import csv
-import io
+from contextvars import ContextVar
 import json
-import hashlib
-import hmac
 import logging
 import mimetypes
+import re
 from pathlib import Path
 import threading
-import time
 import traceback
+import uuid
 from types import SimpleNamespace
 from urllib.parse import urlencode
 from urllib.parse import quote_plus
 from datetime import UTC, datetime
-import re
+from datetime import timedelta
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, inspect, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
-from openpyxl import load_workbook
 
 from .auth import hash_password, verify_password
 from .c6_worker_loan import C6WorkerLoanError, c6_worker_loan_client
 from .config import settings
-from .database import Base, SessionLocal, engine, ensure_runtime_indexes, validate_runtime_schema
-from .facta import FactaError, build_facta_client
+from .database import SessionLocal
 from .importer import (
     backfill_missing_addresses,
+    rebuild_clients_for_cpfs,
     FilterSet,
     count_client_results,
     create_import_batch,
     delete_batch,
     export_clients,
     export_cpfs_for_enrichment,
+    export_wrong_number_clients_for_novavida,
     export_updated_clients_from_latest_enrichment,
     format_money,
     import_public_campaign_updates,
@@ -50,111 +48,91 @@ from .importer import (
     query_clients,
     save_uploaded_files,
 )
-from .models import AppUser, AuditLog, Client, ClientOccurrence, ExportHistory, ExportJob, ImportBatch, ImportJob, PhoneEnrichment, PublicCampaignUpdate, SavedFilter, SourceFile
+from .models import AppUser, AuditLog, Client, ClientOccurrence, ExportHistory, ExportJob, ImportBatch, PhoneEnrichment, PublicCampaignUpdate, SavedFilter, SourceFile
+from .security_helpers import PERMISSION_LABELS, build_permissions, create_auth_token, parse_auth_token, user_can
 from .schemas import ImportRequest
+from .services.job_orchestration import (
+    enqueue_import_job as enqueue_import_job_service,
+    enqueue_export_job as enqueue_export_job_service,
+    run_export_job as run_export_job_service,
+)
+from .services.job_queue import cancel_rq_job
+from .services.audit_service import log_audit, log_audit_with_new_session
+from .services.startup_service import create_schema, ensure_default_admin, run_startup
+from .web_helpers import (
+    build_filter_query_params,
+    build_pagination,
+    current_utc,
+    format_dashboard_datetime,
+    format_phone,
+    format_reference,
+    is_future_timestamp,
+    parse_optional_int,
+    safe_next_path,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 AUTH_COOKIE_NAME = "inss_auth"
-PERMISSION_LABELS = {
-    "can_view_dashboard": "Dashboard",
-    "can_import": "Importacao",
-    "can_search": "Consulta",
-    "can_export": "Gerar listas",
-    "can_view_history": "Historico",
-    "can_delete_batches": "Apagar campanhas",
-    "can_manage_users": "Gerenciar usuarios",
-}
 BASE_SEGMENT_OPTIONS = [
     ("INSS", "INSS"),
+    ("CREFAZ", "Crefaz"),
     ("GOVERNO", "Governo"),
     ("PREFEITURA", "Prefeitura"),
 ]
 CLIENTS_PAGE_SIZE = 25
 HISTORY_PAGE_SIZE = 20
-QUEUE_POLL_SECONDS = 2.0
-logger = logging.getLogger("inss_db_app")
-if not logger.handlers:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
+HOME_DASHBOARD_CACHE_TTL_SECONDS = 90
+home_dashboard_cache_lock = threading.Lock()
+home_dashboard_cache: dict[str, object] = {"expires_at": None, "context": None}
 
 
-class MetricsRegistry:
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._counters: dict[str, float] = {}
-        self._durations: dict[str, tuple[int, float]] = {}
-
-    def inc(self, key: str, value: float = 1.0) -> None:
-        with self._lock:
-            self._counters[key] = self._counters.get(key, 0.0) + value
-
-    def observe(self, key: str, seconds: float) -> None:
-        with self._lock:
-            count, total = self._durations.get(key, (0, 0.0))
-            self._durations[key] = (count + 1, total + max(0.0, seconds))
-
-    def render_prometheus(self, session: Session) -> str:
-        lines: list[str] = []
-        with self._lock:
-            counters = dict(self._counters)
-            durations = dict(self._durations)
-        for key in sorted(counters):
-            lines.append(f'{key} {counters[key]}')
-        for key in sorted(durations):
-            count, total = durations[key]
-            lines.append(f'{key}_count {count}')
-            lines.append(f'{key}_sum {total:.6f}')
-
-        export_pending = session.scalar(select(func.count()).select_from(ExportJob).where(ExportJob.status == "PENDENTE")) or 0
-        export_running = session.scalar(select(func.count()).select_from(ExportJob).where(ExportJob.status == "PROCESSANDO")) or 0
-        import_pending = session.scalar(select(func.count()).select_from(ImportJob).where(ImportJob.status == "PENDENTE")) or 0
-        import_running = session.scalar(select(func.count()).select_from(ImportJob).where(ImportJob.status == "PROCESSANDO")) or 0
-        lines.append(f"inss_export_jobs_pending {export_pending}")
-        lines.append(f"inss_export_jobs_processing {export_running}")
-        lines.append(f"inss_import_jobs_pending {import_pending}")
-        lines.append(f"inss_import_jobs_processing {import_running}")
-        return "\n".join(lines) + "\n"
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "level": record.levelname,
+            "event": getattr(record, "event", record.getMessage()),
+            "request_id": getattr(record, "request_id", request_id_ctx.get("-")),
+            "user": getattr(record, "user", "-"),
+            "message": record.getMessage(),
+        }
+        if getattr(record, "extra_data", None):
+            payload["data"] = record.extra_data
+        if record.exc_info:
+            payload["error"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-metrics = MetricsRegistry()
+def configure_json_logging() -> logging.Logger:
+    logger_instance = logging.getLogger("inss_app")
+    if logger_instance.handlers:
+        return logger_instance
+    logger_instance.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    logger_instance.addHandler(handler)
+    logger_instance.propagate = False
+    return logger_instance
 
 
-def format_reference(value: str) -> str:
-    if not value or "-" not in value:
-        return value
-    year, month = value.split("-", 1)
-    return f"{month}/{year}"
+logger = configure_json_logging()
 
 
-def format_phone(value: str) -> str:
-    digits = "".join(char for char in (value or "") if char.isdigit())
-    if len(digits) == 11:
-        return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
-    if len(digits) == 10:
-        return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
-    return value
-
-
-def format_dashboard_datetime(value) -> str:
-    if value is None:
-        return "-"
-    try:
-        return value.strftime("%d/%m/%Y %H:%M")
-    except AttributeError:
-        return str(value)
-
-
-def current_utc():
-    return datetime.now(UTC)
-
-
-def is_future_timestamp(value: datetime | None) -> bool:
-    if value is None:
-        return False
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return value > current_utc()
+def log_event(level: int, event: str, message: str, *, user: str = "-", request_id: str | None = None, data: dict[str, object] | None = None, exc_info=None) -> None:
+    logger.log(
+        level,
+        message,
+        extra={
+            "event": event,
+            "user": user or "-",
+            "request_id": request_id if request_id is not None else request_id_ctx.get("-"),
+            "extra_data": data or {},
+        },
+        exc_info=exc_info,
+    )
 
 
 templates.env.filters["brl"] = format_money
@@ -166,116 +144,6 @@ def get_session() -> Session:
     session = SessionLocal()
     try:
         yield session
-    finally:
-        session.close()
-
-
-def user_can(user: AppUser | None, permission: str) -> bool:
-    if user is None or not user.is_active:
-        return False
-    if user.is_admin:
-        return True
-    return bool(getattr(user, permission, False))
-
-
-def build_permissions(user: AppUser | None) -> dict[str, bool]:
-    permissions = {key: user_can(user, key) for key in PERMISSION_LABELS}
-    permissions["is_admin"] = bool(user.is_admin) if user else False
-    return permissions
-
-
-def create_auth_token(user_id: int) -> str:
-    payload = str(user_id)
-    signature = hmac.new(settings.session_secret_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"{payload}:{signature}"
-
-
-def parse_auth_token(token: str) -> int | None:
-    if not token or ":" not in token:
-        return None
-    payload, signature = token.split(":", 1)
-    expected = hmac.new(settings.session_secret_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        return None
-    try:
-        return int(payload)
-    except ValueError:
-        return None
-
-
-def is_safe_internal_path(target: str) -> bool:
-    value = (target or "").strip()
-    return value.startswith("/") and not value.startswith("//")
-
-
-def safe_next_path(target: str, default: str = "/") -> str:
-    return target if is_safe_internal_path(target) else default
-
-
-def build_filter_query_params(filters: FilterSet, base_segment: str, selected_matricula: str = "", selected_servico: str = "", page: int | None = None) -> dict[str, str]:
-    payload = {
-        "base_segment": base_segment,
-        "base_source": filters.base_source,
-        "quick_mode": filters.quick_mode,
-        "quick_value": filters.quick_value,
-        "year": str(filters.year or ""),
-        "month": str(filters.month or ""),
-        "week": filters.week,
-        "uf": filters.uf,
-        "city": filters.city,
-        "esp": filters.esp,
-        "margin_min": str(filters.margin_min or ""),
-        "margin_max": str(filters.margin_max or ""),
-        "age_min": str(filters.age_min or ""),
-        "age_max": str(filters.age_max or ""),
-        "has_phone": "sim" if filters.has_phone is True else "nao" if filters.has_phone is False else "",
-        "source_file": filters.source_file,
-        "cpf": filters.cpf,
-        "phone": filters.phone,
-        "ddd": filters.ddd,
-        "name": filters.name,
-        "selected_matricula": selected_matricula,
-        "selected_servico": selected_servico,
-    }
-    if page is not None:
-        payload["page"] = str(page)
-    return payload
-
-
-def build_pagination(total_items: int, page: int, page_size: int) -> dict[str, int | bool]:
-    total_pages = max((total_items + page_size - 1) // page_size, 1)
-    safe_page = min(max(page, 1), total_pages)
-    return {
-        "page": safe_page,
-        "page_size": page_size,
-        "total_items": total_items,
-        "total_pages": total_pages,
-        "offset": (safe_page - 1) * page_size,
-        "has_prev": safe_page > 1,
-        "has_next": safe_page < total_pages,
-        "prev_page": max(safe_page - 1, 1),
-        "next_page": min(safe_page + 1, total_pages),
-    }
-
-
-def log_audit(session: Session, actor_username: str, action: str, target_type: str = "", target_id: str = "", message: str = "", metadata: dict[str, object] | None = None) -> None:
-    session.add(
-        AuditLog(
-            actor_username=actor_username or "sistema",
-            action=action,
-            target_type=target_type,
-            target_id=str(target_id or ""),
-            message=message,
-            metadata_json=json.dumps(metadata or {}, ensure_ascii=False, default=str),
-        )
-    )
-
-
-def log_audit_with_new_session(actor_username: str, action: str, target_type: str = "", target_id: str = "", message: str = "", metadata: dict[str, object] | None = None) -> None:
-    session = SessionLocal()
-    try:
-        log_audit(session, actor_username, action, target_type=target_type, target_id=target_id, message=message, metadata=metadata)
-        session.commit()
     finally:
         session.close()
 
@@ -326,87 +194,35 @@ def enqueue_export_job(
     include_audit: bool = False,
     message: str = "Exportacao colocada em fila.",
     metadata: dict[str, object] | None = None,
+    request_id: str | None = None,
 ) -> ExportJob:
-    job = ExportJob(
+    return enqueue_export_job_service(
+        session=session,
         requested_by=requested_by,
         job_type=job_type,
-        status="PENDENTE",
-        filters_json=serialize_filters(filters) if filters is not None else "{}",
-        include_audit=include_audit,
+        filters=filters,
         file_format=file_format,
-    )
-    session.add(job)
-    session.flush()
-    log_audit(
-        session,
-        requested_by,
-        "export_job_created",
-        target_type="export_job",
-        target_id=str(job.id),
+        include_audit=include_audit,
         message=message,
-        metadata=metadata or {},
-    )
-    session.commit()
-    return job
-
-
-def serialize_import_request(request_data: ImportRequest) -> str:
-    payload = {
-        "year": request_data.year,
-        "month": request_data.month,
-        "user_name": request_data.user_name,
-        "origin_folder": request_data.origin_folder,
-        "files": [str(path) for path in request_data.files],
-        "base_segment": request_data.base_segment,
-        "base_source": request_data.base_source,
-        "allowed_species": request_data.allowed_species,
-    }
-    return json.dumps(payload, ensure_ascii=False)
-
-
-def deserialize_import_request(payload: str) -> ImportRequest:
-    data = json.loads(payload or "{}")
-    return ImportRequest(
-        year=int(data.get("year", 0)),
-        month=int(data.get("month", 0)),
-        user_name=str(data.get("user_name", "operador")),
-        origin_folder=str(data.get("origin_folder", "upload_web")),
-        files=[Path(str(path)) for path in data.get("files", [])],
-        base_segment=str(data.get("base_segment", "INSS")),
-        base_source=str(data.get("base_source", "")),
-        allowed_species=[str(item) for item in data.get("allowed_species", [])],
+        metadata=metadata,
+        request_id=request_id,
     )
 
-
-def enqueue_import_job(session: Session, batch_id: int, request_data: ImportRequest, requested_by: str) -> ImportJob:
-    job = ImportJob(
-        batch_id=batch_id,
-        requested_by=requested_by,
-        status="PENDENTE",
-        request_json=serialize_import_request(request_data),
-    )
-    session.add(job)
-    session.flush()
-    log_audit(
-        session,
-        requested_by,
-        "import_job_created",
-        target_type="import_job",
-        target_id=str(job.id),
-        message="Importacao colocada em fila persistente.",
-        metadata={"batch_id": batch_id},
-    )
-    session.commit()
-    return job
-
-
-def run_export_job(job_id: int) -> None:
+def run_export_job(job_id: int, request_id: str = "-") -> None:
+    request_id_ctx.set(request_id or "-")
     session = SessionLocal()
-    started = time.perf_counter()
     try:
         job = session.get(ExportJob, job_id)
         if job is None:
             return
+        log_event(
+            logging.INFO,
+            "export_job_started",
+            "Processamento de exportacao iniciado.",
+            user=job.requested_by,
+            request_id=request_id,
+            data={"job_id": job.id, "job_type": job.job_type},
+        )
         job.status = "PROCESSANDO"
         job.started_at = current_utc()
         session.commit()
@@ -422,6 +238,11 @@ def run_export_job(job_id: int) -> None:
             if total_rows <= 0:
                 raise ValueError(f"Nenhum CPF encontrado para os filtros informados ({summarize_export_filters(filters)}).")
             export_path = export_cpfs_for_enrichment(session, filters, file_format=job.file_format)
+        elif job.job_type == "novavida_wrong_number":
+            total_rows = count_client_results(session, filters)
+            if total_rows <= 0:
+                raise ValueError(f"Nenhum registro encontrado para os filtros informados ({summarize_export_filters(filters)}).")
+            export_path = export_wrong_number_clients_for_novavida(session, filters, file_format=job.file_format)
         elif job.job_type == "updated_base":
             export_path = export_updated_clients_from_latest_enrichment(
                 session,
@@ -445,7 +266,14 @@ def run_export_job(job_id: int) -> None:
             metadata={"arquivo": export_path.name, "registros": job.total_records, "job_type": job.job_type},
         )
         session.commit()
-        metrics.inc("inss_export_jobs_completed_total")
+        log_event(
+            logging.INFO,
+            "export_job_completed",
+            "Exportacao concluida.",
+            user=job.requested_by,
+            request_id=request_id,
+            data={"job_id": job.id, "job_type": job.job_type, "records": job.total_records, "output_file": job.output_file},
+        )
     except Exception as exc:
         session.rollback()
         failed_job = session.get(ExportJob, job_id)
@@ -455,20 +283,62 @@ def run_export_job(job_id: int) -> None:
             failed_job.finished_at = current_utc()
             log_audit(session, failed_job.requested_by, "export_job_failed", target_type="export_job", target_id=str(failed_job.id), message="Falha na exportacao assincrona.", metadata={"erro": str(exc)})
             session.commit()
-        metrics.inc("inss_export_jobs_failed_total")
+            log_event(
+                logging.ERROR,
+                "export_job_failed",
+                "Falha na exportacao assincrona.",
+                user=failed_job.requested_by,
+                request_id=request_id,
+                data={"job_id": failed_job.id, "job_type": failed_job.job_type, "error": str(exc)},
+                exc_info=True,
+            )
     finally:
-        metrics.observe("inss_export_job_duration_seconds", time.perf_counter() - started)
         session.close()
 
 
 def render_template(request: Request, template_name: str, context: dict[str, object], status_code: int = 200) -> HTMLResponse:
+    path = str(getattr(request.url, "path", "") or "")
+    if path == "/":
+        active_nav = "home"
+    elif path.startswith("/import"):
+        active_nav = "import"
+    elif path.startswith("/clients"):
+        active_nav = "clients"
+    elif path.startswith("/c6"):
+        active_nav = "c6"
+    elif path.startswith("/exports") or path.startswith("/downloads"):
+        active_nav = "exports"
+    elif path.startswith("/history"):
+        active_nav = "history"
+    elif path.startswith("/users"):
+        active_nav = "users"
+    else:
+        active_nav = ""
+
     payload = {
         "current_user": getattr(request.state, "current_user", None),
         "permissions": build_permissions(getattr(request.state, "current_user", None)),
         "base_segment_options": BASE_SEGMENT_OPTIONS,
+        "active_nav": active_nav,
     }
     payload.update(context)
     return templates.TemplateResponse(request, template_name, payload, status_code=status_code)
+
+
+def build_c6_user_friendly_error(error: object) -> str:
+    raw = str(error or "").strip()
+    normalized = raw.lower()
+    if any(term in normalized for term in ("enrollment", "beneficio", "benefício", "deve conter 10 caracteres")):
+        return "Numero do beneficio invalido. Informe exatamente 10 digitos."
+    if any(term in normalized for term in ("margem", "insufficient", "insuficiente", "sem margem", "saldo indisponivel")):
+        return "Cliente sem margem disponivel para esta simulacao."
+    if any(term in normalized for term in ("cpf", "tax_identifier", "documento invalido")):
+        return "CPF invalido. Confira o numero informado."
+    if any(term in normalized for term in ("birth_date", "data de nascimento", "nascimento invalido")):
+        return "Data de nascimento invalida. Use o formato correto."
+    if any(term in normalized for term in ("timeout", "timed out", "temporarily unavailable", "service unavailable", "502", "503", "504")):
+        return "Servico de consignado indisponivel no momento. Tente novamente em instantes."
+    return "Nao foi possivel concluir a operacao de consignado. Revise os dados e tente novamente."
 
 
 def base_segment_label(value: str) -> str:
@@ -497,32 +367,6 @@ def _first_extra_value(extras: dict[str, object], *keys: str) -> str:
         value = extras.get(key)
         if _norm_text(value):
             return _norm_text(value)
-    return ""
-
-
-SPECIES_MEANINGS: dict[str, str] = {
-    "21": "Pensao por morte previdenciaria",
-    "41": "Aposentadoria por idade",
-    "42": "Aposentadoria por tempo de contribuicao",
-    "46": "Aposentadoria especial",
-    "31": "Auxilio doenca previdenciario",
-    "32": "Aposentadoria por invalidez previdenciaria",
-    "87": "Amparo assistencial ao idoso (LOAS/BPC)",
-    "88": "Amparo assistencial a pessoa com deficiencia (LOAS/BPC)",
-}
-
-
-def get_species_meaning(raw_species: str) -> str:
-    text = _norm_text(raw_species)
-    if not text:
-        return ""
-    code = "".join(char for char in text if char.isdigit())[:2]
-    if code in SPECIES_MEANINGS:
-        return SPECIES_MEANINGS[code]
-    if "-" in text:
-        right = text.split("-", 1)[1].strip()
-        if right:
-            return right
     return ""
 
 
@@ -579,24 +423,24 @@ def _build_public_filter_options(session: Session, base_segment: str, base_sourc
             extras,
             "ENTIDADE",
             "ORGAO",
-            "ORGÃO",
+            "ORGÃƒO",
             "SECRETARIA",
-            "DESCRIÇAO CNPJ",
-            "DESCRIÇÃO CNPJ",
+            "DESCRIÃ‡AO CNPJ",
+            "DESCRIÃ‡ÃƒO CNPJ",
             "DESCRICAO CNPJ",
         )
-        convenio_extra = _first_extra_value(extras, "CONVENIO", "CONVÊNIO")
+        convenio_extra = _first_extra_value(extras, "CONVENIO", "CONVÃŠNIO")
         servico_extra = _first_extra_value(
             extras,
             "SERVICO",
-            "SERVIÇO",
+            "SERVIÃ‡O",
             "SERVICO (SERVIDOR)",
-            "SERVIÇO (SERVIDOR)",
+            "SERVIÃ‡O (SERVIDOR)",
             "TIPO SERVICO (SERVIDOR)",
-            "TIPO SERVIÇO (SERVIDOR)",
+            "TIPO SERVIÃ‡O (SERVIDOR)",
         )
-        situacao_extra = _first_extra_value(extras, "SITUACAO", "SITUAÇÃO", "STATUS")
-        cargo_extra = _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÇÃO", "FUNÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O", "CARGO/FUNCAO", "CARGO FUNCAO", "CBO TITULO", "CBO_TITULO")
+        situacao_extra = _first_extra_value(extras, "SITUACAO", "SITUAÃ‡ÃƒO", "STATUS")
+        cargo_extra = _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÃ‡ÃƒO", "FUNÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢O", "CARGO/FUNCAO", "CARGO FUNCAO", "CBO TITULO", "CBO_TITULO")
         tipo_vinculo = _first_extra_value(extras, "REGIME_CONTRATACAO", "TIPO DE VINCULO", "TIPO_VINCULO", "VINCULO", "REGIME DE CONTRATACAO")
         if entidade_extra:
             entidades.add(entidade_extra)
@@ -638,6 +482,7 @@ def ensure_default_admin() -> None:
                 can_view_dashboard=True,
                 can_import=True,
                 can_search=True,
+                can_access_consignado_inss=True,
                 can_export=True,
                 can_view_history=True,
                 can_delete_batches=True,
@@ -649,14 +494,30 @@ def ensure_default_admin() -> None:
         session.close()
 
 
-def run_import_job(batch_id: int, request_data: ImportRequest) -> None:
+def run_import_job(batch_id: int, request_data: ImportRequest, request_id: str = "-") -> None:
+    request_id_ctx.set(request_id or "-")
     session = SessionLocal()
-    started = time.perf_counter()
     try:
         batch = session.get(ImportBatch, batch_id)
         if batch is None:
             return
+        log_event(
+            logging.INFO,
+            "import_batch_started",
+            "Processamento de importacao iniciado.",
+            user=request_data.user_name,
+            request_id=request_id,
+            data={"batch_id": batch_id, "base_segment": request_data.base_segment, "files": len(request_data.files)},
+        )
         summary = process_import_batch(session, batch, request_data)
+        log_event(
+            logging.INFO,
+            "import_batch_completed",
+            "Importacao concluida.",
+            user=request_data.user_name,
+            request_id=request_id,
+            data={"batch_id": batch_id, "rows_imported": summary.rows_imported, "files_imported": summary.files_imported},
+        )
         log_audit_with_new_session(
             request_data.user_name,
             "import_batch_completed",
@@ -665,9 +526,31 @@ def run_import_job(batch_id: int, request_data: ImportRequest) -> None:
             message="Importacao concluida.",
             metadata={"rows_imported": summary.rows_imported, "files_imported": summary.files_imported},
         )
-        metrics.inc("inss_import_batches_completed_total")
+        if normalize_base_segment(request_data.base_segment) == "CREFAZ":
+            threading.Thread(
+                target=run_post_import_enrichment,
+                args=(batch_id, request_data.user_name),
+                daemon=True,
+            ).start()
     except Exception as exc:
         traceback.print_exc()
+        log_event(
+            logging.ERROR,
+            "import_batch_failed",
+            "Falha na importacao.",
+            user=request_data.user_name,
+            request_id=request_id,
+            data={"batch_id": batch_id, "error": str(exc)},
+            exc_info=True,
+        )
+        try:
+            failed_batch = session.get(ImportBatch, batch_id)
+            if failed_batch is not None and failed_batch.status == "PROCESSANDO":
+                failed_batch.status = "ERRO"
+                failed_batch.resumo = f"Falha na importacao (worker): {exc}"
+                session.commit()
+        except Exception:
+            session.rollback()
         log_audit_with_new_session(
             request_data.user_name,
             "import_batch_failed",
@@ -676,120 +559,39 @@ def run_import_job(batch_id: int, request_data: ImportRequest) -> None:
             message="Falha na importacao.",
             metadata={"erro": str(exc), "traceback": traceback.format_exc(limit=20)},
         )
-        metrics.inc("inss_import_batches_failed_total")
-        raise
-    finally:
-        metrics.observe("inss_import_batch_duration_seconds", time.perf_counter() - started)
-        session.close()
-
-
-def process_next_export_job() -> bool:
-    session = SessionLocal()
-    try:
-        job = session.execute(select(ExportJob).where(ExportJob.status == "PENDENTE").order_by(ExportJob.created_at.asc())).scalars().first()
-        if job is None:
-            return False
-        job.status = "PROCESSANDO"
-        job.started_at = current_utc()
-        session.commit()
-        run_export_job(job.id)
-        return True
     finally:
         session.close()
 
 
-def process_next_import_job() -> bool:
-    session = SessionLocal()
-    try:
-        if not inspect(engine).has_table("import_jobs"):
-            return False
-        job = session.execute(select(ImportJob).where(ImportJob.status == "PENDENTE").order_by(ImportJob.created_at.asc())).scalars().first()
-        if job is None:
-            return False
-        job.status = "PROCESSANDO"
-        job.started_at = current_utc()
-        session.commit()
-        request_data = deserialize_import_request(job.request_json)
-        try:
-            run_import_job(job.batch_id, request_data)
-            completed = session.get(ImportJob, job.id)
-            if completed is not None:
-                completed.status = "CONCLUIDO"
-                completed.finished_at = current_utc()
-                session.commit()
-                metrics.inc("inss_import_jobs_completed_total")
-        except Exception as exc:
-            session.rollback()
-            failed = session.get(ImportJob, job.id)
-            if failed is not None:
-                failed.status = "ERRO"
-                failed.error_message = str(exc)
-                failed.finished_at = current_utc()
-                session.commit()
-            metrics.inc("inss_import_jobs_failed_total")
-        return True
-    finally:
-        session.close()
-
-
-def revive_stuck_jobs() -> None:
-    session = SessionLocal()
-    try:
-        now = current_utc()
-        if inspect(engine).has_table("export_jobs"):
-            session.execute(
-                ExportJob.__table__.update()
-                .where(ExportJob.status == "PROCESSANDO")
-                .values(status="PENDENTE", started_at=None, finished_at=None, error_message="Reenfileirado apos reinicio do servidor.")
-            )
-        if inspect(engine).has_table("import_jobs"):
-            session.execute(
-                ImportJob.__table__.update()
-                .where(ImportJob.status == "PROCESSANDO")
-                .values(status="PENDENTE", started_at=None, finished_at=None, error_message="Reenfileirado apos reinicio do servidor.")
-            )
-        stale_batches = session.execute(select(ImportBatch).where(ImportBatch.status == "PROCESSANDO")).scalars().all()
-        for batch in stale_batches:
-            batch.status = "PENDENTE"
-            batch.resumo = f"{batch.resumo}\nReenfileirado em {now.isoformat()} apos reinicio do servidor.".strip()
-        session.commit()
-    finally:
-        session.close()
-
-
-def queue_worker_loop() -> None:
-    while True:
-        did_work = False
-        start = time.perf_counter()
-        try:
-            did_work = process_next_export_job() or did_work
-            did_work = process_next_import_job() or did_work
-        except Exception as exc:
-            logger.info(json.dumps({"event": "queue_worker_error", "error": str(exc)}, ensure_ascii=False))
-        metrics.observe("inss_queue_cycle_duration_seconds", time.perf_counter() - start)
-        if not did_work:
-            time.sleep(QUEUE_POLL_SECONDS)
-
-
-def create_schema() -> None:
-    Base.metadata.create_all(bind=engine)
-    ensure_runtime_indexes()
-    ensure_default_admin()
-
-
-def run_startup_address_backfill() -> None:
+def run_post_import_enrichment(batch_id: int, actor_username: str) -> None:
     session = SessionLocal()
     try:
         summary = backfill_missing_addresses(session)
-        print(
-            "Startup address backfill:",
-            f"scanned={summary.scanned_rows}",
-            f"updated={summary.updated_rows}",
-            f"rebuilt_clients={summary.rebuilt_clients}",
-            f"skipped_invalid_cep={summary.skipped_invalid_cep}",
+        log_audit(
+            session,
+            actor_username or "sistema",
+            "post_import_enrichment_completed",
+            target_type="batch",
+            target_id=str(batch_id),
+            message="Enriquecimento pos-importacao concluido.",
+            metadata={
+                "scanned_rows": summary.scanned_rows,
+                "updated_rows": summary.updated_rows,
+                "rebuilt_clients": summary.rebuilt_clients,
+                "skipped_invalid_cep": summary.skipped_invalid_cep,
+            },
         )
+        session.commit()
     except Exception as exc:
-        print(f"Startup address backfill failed: {exc}")
+        session.rollback()
+        log_audit_with_new_session(
+            actor_username or "sistema",
+            "post_import_enrichment_failed",
+            target_type="batch",
+            target_id=str(batch_id),
+            message="Falha no enriquecimento pos-importacao.",
+            metadata={"erro": str(exc), "traceback": traceback.format_exc(limit=20)},
+        )
     finally:
         session.close()
 
@@ -801,7 +603,7 @@ def get_authenticated_user(request: Request, session: Session) -> AppUser:
     user = session.get(AppUser, user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401)
-    if user.locked_until and user.locked_until > current_utc():
+    if is_future_timestamp(user.locked_until):
         raise HTTPException(status_code=403)
     return user
 
@@ -818,17 +620,7 @@ def require_permission(permission: str):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if settings.enable_startup_schema_maintenance:
-        create_schema()
-        print("Startup maintenance: schema ready")
-    else:
-        validate_runtime_schema()
-        ensure_default_admin()
-        print("Startup maintenance: schema validated")
-    if settings.enable_startup_address_backfill:
-        threading.Thread(target=run_startup_address_backfill, daemon=True).start()
-    revive_stuck_jobs()
-    threading.Thread(target=queue_worker_loop, daemon=True).start()
+    run_startup(log_event)
     yield
 
 
@@ -838,7 +630,9 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 
 @app.middleware("http")
 async def attach_current_user(request: Request, call_next):
-    started = time.perf_counter()
+    request_id = (request.headers.get("x-request-id") or "").strip() or str(uuid.uuid4())
+    request_id_ctx.set(request_id)
+    request.state.request_id = request_id
     request.state.current_user = None
     user_id = parse_auth_token(request.cookies.get(AUTH_COOKIE_NAME, ""))
     if user_id:
@@ -849,26 +643,18 @@ async def attach_current_user(request: Request, call_next):
                 request.state.current_user = user
         finally:
             session.close()
+    started_at = datetime.now(UTC)
     response = await call_next(request)
-    elapsed = time.perf_counter() - started
-    user = getattr(request.state, "current_user", None)
-    path = request.url.path
-    method = request.method.upper()
-    status_code = getattr(response, "status_code", 500)
-    metrics.inc(f'inss_http_requests_total{{method="{method}",path="{path}",status="{status_code}"}}')
-    metrics.observe(f'inss_http_request_duration_seconds{{method="{method}",path="{path}"}}', elapsed)
-    logger.info(
-        json.dumps(
-            {
-                "event": "http_request",
-                "method": method,
-                "path": path,
-                "status": status_code,
-                "duration_ms": round(elapsed * 1000, 2),
-                "user": getattr(user, "username", None),
-            },
-            ensure_ascii=False,
-        )
+    elapsed_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
+    user_name = getattr(getattr(request.state, "current_user", None), "username", "-")
+    response.headers["X-Request-ID"] = request_id
+    log_event(
+        logging.INFO,
+        "http_request_completed",
+        f"{request.method} {request.url.path}",
+        user=user_name,
+        request_id=request_id,
+        data={"method": request.method, "path": request.url.path, "status_code": response.status_code, "elapsed_ms": elapsed_ms},
     )
     return response
 
@@ -889,14 +675,31 @@ async def forbidden_handler(request: Request, _exc: HTTPException):
     )
 
 
-@app.get("/login", response_class=HTMLResponse)
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    user_name = getattr(getattr(request.state, "current_user", None), "username", "-")
+    request_id = getattr(request.state, "request_id", request_id_ctx.get("-"))
+    log_event(
+        logging.ERROR,
+        "unhandled_exception",
+        "Erro nao tratado durante processamento da requisicao.",
+        user=user_name,
+        request_id=request_id,
+        data={"method": request.method, "path": request.url.path},
+        exc_info=True,
+    )
+    return JSONResponse(
+        {"detail": "Erro interno do servidor.", "request_id": request_id},
+        status_code=500,
+    )
+
+
 def login_page(request: Request, next: str = "/clients") -> HTMLResponse:
     if getattr(request.state, "current_user", None):
         return RedirectResponse(url=safe_next_path(next), status_code=303)
     return render_template(request, "login.html", {"error": "", "next": safe_next_path(next), "title": "Login"})
 
 
-@app.post("/login", response_class=HTMLResponse, response_model=None)
 def login_submit(
     request: Request,
     username: str = Form(...),
@@ -928,236 +731,19 @@ def login_submit(
     return response
 
 
-@app.get("/logout")
 def logout() -> RedirectResponse:
     response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie(AUTH_COOKIE_NAME)
     return response
 
 
-def _extract_cpfs_from_sheet(content: bytes, filename: str, cpf_column: str = "cpf") -> list[str]:
-    name = (filename or "").lower()
-    values: list[str] = []
-    if name.endswith(".csv"):
-        text = content.decode("utf-8", errors="replace")
-        reader = csv.DictReader(io.StringIO(text))
-        for row in reader:
-            raw = str(row.get(cpf_column, "")).strip()
-            if raw:
-                values.append(raw)
-    elif name.endswith(".xlsx"):
-        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-        ws = wb.active
-        header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
-        if not header:
-            return []
-        index_by_name = {str(col).strip().lower(): idx for idx, col in enumerate(header) if col is not None}
-        idx = index_by_name.get(cpf_column.lower())
-        if idx is None:
-            return []
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            raw = row[idx] if idx < len(row) else None
-            if raw is not None:
-                values.append(str(raw).strip())
-    return values
+def c6_entry(_current_user: AppUser = Depends(require_permission("can_access_consignado_inss"))) -> RedirectResponse:
+    return RedirectResponse(url="/c6-inss", status_code=302)
 
 
-@app.get("/clt", response_class=HTMLResponse)
-def clt_page(
-    request: Request,
-    _current_user: AppUser = Depends(require_permission("can_search")),
-) -> HTMLResponse:
-    return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": ""})
-
-
-@app.post("/clt/consulta-individual", response_class=HTMLResponse)
-def clt_consulta_individual(
-    request: Request,
-    cpf: str = Form(...),
-    nome: str = Form(""),
-    celular: str = Form(""),
-    tipo_envio: str = Form("WHATSAPP"),
-    _current_user: AppUser = Depends(require_permission("can_search")),
-) -> HTMLResponse:
-    cpf_limpo = "".join(ch for ch in cpf if ch.isdigit())
-    if len(cpf_limpo) != 11:
-        return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": "CPF invalido. Informe 11 digitos."}, status_code=400)
-    try:
-        client = build_facta_client()
-        offline = client.consulta_offline(cpf_limpo)
-        mensagem_offline = str(offline.get("mensagem") or "")
-        if "Dados retornados com sucesso" in mensagem_offline:
-            return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": {"cpf": cpf_limpo, "origem": "offline", "offline": offline}, "error": ""})
-
-        if not nome or not celular:
-            return render_template(
-                request,
-                "clt.html",
-                {
-                    "title": "Consulta CLT FACTA",
-                    "result": {"cpf": cpf_limpo, "origem": "sem_dado_offline", "offline": offline, "proximo_passo": "Informe nome e celular para solicitar autorizacao online."},
-                    "error": "",
-                },
-            )
-
-        autorizacao = client.solicita_autorizacao(cpf=cpf_limpo, nome=nome, celular=celular, tipo_envio=tipo_envio)
-        consulta_online = client.consulta_online(cpf_limpo)
-        ofertas = client.consulta_ofertas(cpf_limpo)
-        return render_template(
-            request,
-            "clt.html",
-            {"title": "Consulta CLT FACTA", "result": {"cpf": cpf_limpo, "origem": "online", "autorizacao": autorizacao, "consulta_online": consulta_online, "ofertas": ofertas}, "error": ""},
-        )
-    except FactaError as exc:
-        return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": str(exc)}, status_code=502)
-
-
-@app.post("/clt/consulta-lote", response_class=JSONResponse)
-def clt_consulta_lote(
-    cpfs: str = Form(...),
-    _current_user: AppUser = Depends(require_permission("can_search")),
-) -> JSONResponse:
-    try:
-        client = build_facta_client()
-    except FactaError as exc:
-        return JSONResponse({"total": 0, "resultados": [], "erro": str(exc)}, status_code=500)
-
-    linhas = [item.strip() for item in cpfs.replace("\r", "").split("\n") if item.strip()]
-    resultados: list[dict[str, str]] = []
-    for item in linhas:
-        cpf_limpo = "".join(ch for ch in item if ch.isdigit())
-        if len(cpf_limpo) != 11:
-            resultados.append({"cpf": item, "status": "erro", "mensagem": "CPF invalido"})
-            continue
-        try:
-            offline = client.consulta_offline(cpf_limpo)
-            mensagem = str(offline.get("mensagem") or "")
-            status = "ok_offline" if "Dados retornados com sucesso" in mensagem else "sem_dado_offline"
-            resultados.append({"cpf": cpf_limpo, "status": status, "mensagem": mensagem})
-        except FactaError as exc:
-            resultados.append({"cpf": cpf_limpo, "status": "erro", "mensagem": str(exc)})
-
-    return JSONResponse({"total": len(linhas), "resultados": resultados})
-
-
-@app.post("/clt/consulta-lote-planilha", response_class=HTMLResponse)
-async def clt_consulta_lote_planilha(
-    request: Request,
-    file: UploadFile = File(...),
-    cpf_column: str = Form("cpf"),
-    _current_user: AppUser = Depends(require_permission("can_search")),
-) -> HTMLResponse:
-    try:
-        client = build_facta_client()
-    except FactaError as exc:
-        return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": str(exc)}, status_code=500)
-
-    if not file.filename:
-        return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": "Arquivo sem nome."}, status_code=400)
-    if not (file.filename.lower().endswith(".csv") or file.filename.lower().endswith(".xlsx")):
-        return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": None, "error": "Formato invalido. Envie .csv ou .xlsx"}, status_code=400)
-
-    content = await file.read()
-    cpfs_raw = _extract_cpfs_from_sheet(content=content, filename=file.filename, cpf_column=cpf_column.strip() or "cpf")
-    if not cpfs_raw:
-        return render_template(
-            request,
-            "clt.html",
-            {"title": "Consulta CLT FACTA", "result": None, "error": f"Nenhum CPF encontrado na coluna '{cpf_column}'."},
-            status_code=400,
-        )
-
-    resultados: list[dict[str, str]] = []
-    for item in cpfs_raw:
-        cpf_limpo = "".join(ch for ch in item if ch.isdigit())
-        if len(cpf_limpo) != 11:
-            resultados.append({"cpf": item, "status": "erro", "mensagem": "CPF invalido"})
-            continue
-        try:
-            offline = client.consulta_offline(cpf_limpo)
-            mensagem = str(offline.get("mensagem") or "")
-            status = "ok_offline" if "Dados retornados com sucesso" in mensagem else "sem_dado_offline"
-            resultados.append({"cpf": cpf_limpo, "status": status, "mensagem": mensagem})
-        except FactaError as exc:
-            resultados.append({"cpf": cpf_limpo, "status": "erro", "mensagem": str(exc)})
-
-    total = len(cpfs_raw)
-    ok_offline = sum(1 for row in resultados if row["status"] == "ok_offline")
-    sem_dado = sum(1 for row in resultados if row["status"] == "sem_dado_offline")
-    erros = sum(1 for row in resultados if row["status"] == "erro")
-    result = {
-        "modo": "lote_planilha",
-        "arquivo": file.filename,
-        "coluna_cpf": cpf_column,
-        "total": total,
-        "ok_offline": ok_offline,
-        "sem_dado_offline": sem_dado,
-        "erros": erros,
-        "resultados": resultados,
-    }
-    return render_template(request, "clt.html", {"title": "Consulta CLT FACTA", "result": result, "error": ""})
-
-
-@app.get("/c6-worker", response_class=HTMLResponse)
-def c6_worker_page(
-    request: Request,
-    _current_user: AppUser = Depends(require_permission("can_search")),
-) -> HTMLResponse:
-    defaults = {
-        "worker_cpf": "",
-        "auth_nome": "",
-        "auth_data_nascimento": "",
-        "auth_ddd": "",
-        "auth_numero_telefone": "",
-        "simulation_type": "POR_VALOR_MAXIMO",
-        "simulation_prazo": "24",
-        "simulation_installment_value": "",
-        "simulation_requested_amount": "",
-        "simulation_version": "v2",
-        "include_id_simulacao": "",
-        "include_ddd": "",
-        "include_numero_telefone": "",
-        "include_logradouro": "",
-        "include_numero": "",
-        "include_cep": "",
-        "include_bairro": "",
-        "include_cidade": "",
-        "include_uf": "",
-        "include_codigo_origem_6": "",
-        "include_numero_cpf_certificado": "",
-        "include_tipo_conta": "ContaCorrenteIndividual",
-        "include_numero_banco": "",
-        "include_numero_agencia": "",
-        "include_digito_agencia": "",
-        "include_numero_conta": "",
-        "include_digito_conta": "",
-    }
-    return render_template(
-        request,
-        "c6_worker.html",
-        {
-            "title": "Consignado Trabalhador C6",
-            "result": None,
-            "error": "",
-            "active_action": "offer",
-            **defaults,
-        },
-    )
-
-
-@app.get("/c6")
-def c6_entry(
-    produto: str = "inss",
-    _current_user: AppUser = Depends(require_permission("can_search")),
-) -> RedirectResponse:
-    destino = "/c6-worker" if (produto or "").strip().lower() in {"trabalhador", "worker"} else "/c6-inss"
-    return RedirectResponse(url=destino, status_code=302)
-
-
-@app.get("/c6-inss", response_class=HTMLResponse)
 def c6_inss_page(
     request: Request,
-    _current_user: AppUser = Depends(require_permission("can_search")),
+    _current_user: AppUser = Depends(require_permission("can_access_consignado_inss")),
 ) -> HTMLResponse:
     return render_template(
         request,
@@ -1193,7 +779,6 @@ def c6_inss_page(
     )
 
 
-@app.post("/c6-inss", response_class=HTMLResponse)
 def c6_inss_submit(
     request: Request,
     tax_identifier: str = Form(""),
@@ -1210,14 +795,13 @@ def c6_inss_submit(
     promoter_code: str = Form("003238"),
     covenant_group: str = Form("INSS"),
     public_agency: str = Form("000001"),
-    current_user: AppUser = Depends(require_permission("can_search")),
+    current_user: AppUser = Depends(require_permission("can_access_consignado_inss")),
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
     def to_float(value: str, field_name: str) -> float:
         raw = (value or "").strip()
         if not raw:
             return 0.0
-        # Aceita formatos como 1518, 1518.00, 1.518,00 e 1,518.00
         if "," in raw and "." in raw:
             if raw.rfind(",") > raw.rfind("."):
                 raw = raw.replace(".", "").replace(",", ".")
@@ -1230,20 +814,20 @@ def c6_inss_submit(
         except ValueError as exc:
             raise ValueError(f"Valor invalido para {field_name}: {value}") from exc
 
-    def to_int(value: str, field_name: str) -> int:
+    def to_int(value: str) -> int:
         raw = "".join(ch for ch in (value or "") if ch.isdigit())
-        if not raw:
-            return 0
-        try:
-            return int(raw)
-        except ValueError as exc:
-            raise ValueError(f"Valor invalido para {field_name}: {value}") from exc
+        return int(raw or "0")
+
+    def to_enrollment(value: str) -> str:
+        digits = "".join(ch for ch in (value or "") if ch.isdigit())
+        if len(digits) != 10:
+            raise ValueError("Numero do beneficio invalido. Informe exatamente 10 digitos.")
+        return digits
 
     def to_birth_date(value: str) -> str:
         raw = (value or "").strip()
         if not raw:
             raise ValueError("Data de nascimento obrigatoria.")
-        parsed_date: datetime | None = None
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
             normalized = raw
         elif re.fullmatch(r"\d{2}/\d{2}/\d{4}", raw):
@@ -1251,11 +835,8 @@ def c6_inss_submit(
             normalized = f"{year}-{month}-{day}"
         else:
             raise ValueError("Data de nascimento invalida. Use dd/mm/aaaa ou aaaa-mm-dd.")
-        try:
-            parsed_date = datetime.strptime(normalized, "%Y-%m-%d")
-        except ValueError as exc:
-            raise ValueError("Data de nascimento invalida.") from exc
-        if parsed_date.date() > datetime.now().date():
+        parsed = datetime.strptime(normalized, "%Y-%m-%d")
+        if parsed.date() > datetime.now().date():
             raise ValueError("Data de nascimento nao pode ser futura.")
         return normalized
 
@@ -1264,12 +845,15 @@ def c6_inss_submit(
         return f"{number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
     error = ""
+    api_status_note = ""
     result: dict[str, object] | None = None
     simulation_conditions: list[dict[str, object]] = []
     continue_url = ""
+    best_offer: dict[str, object] | None = None
+    payload: dict[str, object] = {}
     try:
         simulation_type_normalized = simulation_type.strip().upper()
-        payload: dict[str, object] = {
+        payload = {
             "operation_type": operation_type.strip(),
             "product_type_code": product_type_code.strip(),
             "simulation_type": simulation_type_normalized,
@@ -1277,52 +861,51 @@ def c6_inss_submit(
             "promoter_code": promoter_code.strip().zfill(6),
             "covenant_group": covenant_group.strip(),
             "public_agency": public_agency.strip(),
-            "installment_quantity": to_int(installment_quantity, "installment_quantity"),
-            "client": {
-                "tax_identifier": tax_identifier.strip(),
-                "enrollment": enrollment.strip(),
-                "birth_date": to_birth_date(birth_date),
-                "income_amount": to_float(income_amount, "income_amount"),
-            },
+            "installment_quantity": to_int(installment_quantity),
+                "client": {
+                    "tax_identifier": tax_identifier.strip(),
+                    "enrollment": to_enrollment(enrollment),
+                    "birth_date": to_birth_date(birth_date),
+                    "income_amount": to_float(income_amount, "income_amount"),
+                },
         }
         if simulation_type_normalized == "POR_VALOR_PARCELA":
             payload["installment_amount"] = to_float(installment_amount, "installment_amount")
         else:
             payload["requested_amount"] = to_float(requested_amount, "requested_amount")
     except ValueError as exc:
-        payload = {}
         error = str(exc)
-    if not error:
-        if not payload["client"]["tax_identifier"]:
-            error = "CPF do cliente e obrigatorio."
-        elif len(payload["client"]["enrollment"]) != 10:
-            error = "Matricula deve conter exatamente 10 caracteres."
-        elif payload.get("simulation_type") == "POR_VALOR_PARCELA" and float(payload.get("installment_amount", 0) or 0) <= 0:
-            error = "Informe um valor da parcela valido."
-        elif payload.get("simulation_type") != "POR_VALOR_PARCELA" and float(payload.get("requested_amount", 0) or 0) <= 0:
-            error = "Informe um valor solicitado valido."
 
     if not error:
         try:
             response = c6_worker_loan_client.simulate_inss_proposal(payload)
-            action_name = "c6_inss_simulation_requested"
             result = {"status_code": response.status_code, "data": response.payload, "action": "simulation", "payload_enviado": payload}
+            if response.status_code == 200:
+                api_status_note = "Consulta concluida com sucesso."
+            elif response.status_code in (400, 422):
+                api_status_note = "API recebeu a requisicao, mas retornou validacao de dados."
+            elif response.status_code in (401, 403):
+                api_status_note = "API recusou autenticacao/autorizacao."
+            else:
+                api_status_note = f"API retornou HTTP {response.status_code}."
             for item in (response.payload or {}).get("credit_conditions", []):
                 covenant = item.get("covenant", {}) if isinstance(item, dict) else {}
                 observation = covenant.get("observation", "")
-                installment_amount_value = item.get("installment_amount", 0) if isinstance(item, dict) else 0
+                installment_value = item.get("installment_amount", 0) if isinstance(item, dict) else 0
+                client_amount_value = item.get("client_amount", 0) if isinstance(item, dict) else 0
+                monthly_rate_value = item.get("monthly_customer_rate", 0) if isinstance(item, dict) else 0
                 row = {
                     "covenant_code": covenant.get("code", ""),
                     "covenant_description": covenant.get("description", ""),
                     "observation": observation,
                     "requested_amount": item.get("requested_amount", 0),
-                    "installment_amount": installment_amount_value,
+                    "installment_amount": installment_value,
                     "installment_quantity": item.get("installment_quantity", 0),
-                    "client_amount": item.get("client_amount", 0),
-                    "monthly_customer_rate": item.get("monthly_customer_rate", 0),
+                    "client_amount": client_amount_value,
+                    "monthly_customer_rate": monthly_rate_value,
                     "product_code": (item.get("product", {}) or {}).get("code", "") if isinstance(item, dict) else "",
                     "product_description": (item.get("product", {}) or {}).get("description", "") if isinstance(item, dict) else "",
-                    "is_valid": not observation and float(item.get("requested_amount", 0) or 0) > 0 and float(installment_amount_value or 0) > 0,
+                    "is_valid": not observation and float(item.get("requested_amount", 0) or 0) > 0 and float(installment_value or 0) > 0,
                 }
                 if row["is_valid"]:
                     requested_amount_for_include = row["requested_amount"]
@@ -1335,7 +918,7 @@ def c6_inss_submit(
                             "birth_date": birth_date,
                             "income_amount": income_amount,
                             "requested_amount": to_money_br(requested_amount_for_include),
-                            "installment_amount": installment_amount_value,
+                            "installment_amount": installment_value,
                             "installment_quantity": str(row["installment_quantity"]),
                             "simulation_type": simulation_type,
                             "operation_type": operation_type,
@@ -1353,12 +936,27 @@ def c6_inss_submit(
                         }
                     )
                 simulation_conditions.append(row)
-            simulation_conditions.sort(key=lambda row: (not bool(row["is_valid"]), float(row["installment_amount"] or 0)))
+            valid_rows = [row for row in simulation_conditions if row["is_valid"]]
+            invalid_rows = [row for row in simulation_conditions if not row["is_valid"]]
+            valid_rows.sort(
+                key=lambda row: (
+                    -float(row.get("client_amount") or 0),
+                    float(row.get("monthly_customer_rate") or 999),
+                    float(row.get("installment_amount") or 999999),
+                )
+            )
+            if valid_rows:
+                best_offer = valid_rows[0]
+                best_offer["highlight_badge"] = "Maior valor"
+                best_rate_row = min(valid_rows, key=lambda row: float(row.get("monthly_customer_rate") or 999))
+                if best_rate_row is not best_offer:
+                    best_rate_row["highlight_badge"] = "Menor taxa"
+                else:
+                    best_offer["highlight_badge"] = "Maior valor e menor taxa"
+            simulation_conditions = valid_rows + invalid_rows
             requested_amount_for_continue = requested_amount
-            if simulation_type_normalized == "POR_VALOR_PARCELA":
-                first_valid = next((row for row in simulation_conditions if row.get("is_valid")), None)
-                if first_valid is not None:
-                    requested_amount_for_continue = to_money_br(first_valid.get("client_amount") or requested_amount)
+            if simulation_type_normalized == "POR_VALOR_PARCELA" and best_offer is not None:
+                requested_amount_for_continue = to_money_br(best_offer.get("client_amount") or requested_amount)
             continue_url = "/c6-inss/include?" + urlencode(
                 {
                     "tax_identifier": tax_identifier,
@@ -1380,14 +978,24 @@ def c6_inss_submit(
             log_audit(
                 session,
                 current_user.username,
-                action_name,
+                "c6_inss_simulation_requested",
                 target_type="integration",
                 message="Operacao C6 INSS executada pela tela de consignado tradicional.",
                 metadata={"path": str(request.url.path), "action": "simulation"},
             )
             session.commit()
         except C6WorkerLoanError as exc:
-            error = f"{exc}\nPayload enviado: {json.dumps(payload, ensure_ascii=False)}"
+            error = build_c6_user_friendly_error(exc)
+            api_status_note = "Falha ao consultar API de consignado."
+            log_audit(
+                session,
+                current_user.username,
+                "c6_inss_simulation_failed",
+                target_type="integration",
+                message=error,
+                metadata={"path": str(request.url.path), "action": "simulation", "technical_error": str(exc), "payload_enviado": payload},
+            )
+            session.commit()
 
     return render_template(
         request,
@@ -1396,8 +1004,9 @@ def c6_inss_submit(
             "title": "Consignado Tradicional INSS C6",
             "result": result,
             "error": error,
-            "active_action": "simulation",
+            "api_status_note": api_status_note,
             "simulation_conditions": simulation_conditions,
+            "best_offer": best_offer,
             "continue_url": continue_url,
             "tax_identifier": tax_identifier,
             "enrollment": enrollment,
@@ -1418,10 +1027,50 @@ def c6_inss_submit(
     )
 
 
-@app.get("/c6-inss/include", response_class=HTMLResponse)
+def c6_latest_inss_client_by_cpf(
+    cpf: str,
+    _current_user: AppUser = Depends(require_permission("can_access_consignado_inss")),
+    session: Session = Depends(get_session),
+) -> JSONResponse:
+    normalized_cpf = normalize_cpf(cpf)
+    if len(normalized_cpf) != 11:
+        raise HTTPException(status_code=422, detail="CPF invalido.")
+
+    latest_occurrence = session.execute(
+        select(ClientOccurrence)
+        .where(
+            ClientOccurrence.cpf == normalized_cpf,
+            ClientOccurrence.base_segment == "INSS",
+        )
+        .order_by(ClientOccurrence.criado_em.desc(), ClientOccurrence.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if latest_occurrence is None:
+        raise HTTPException(status_code=404, detail="Nenhuma ocorrencia INSS encontrada para este CPF.")
+
+    birth_date = (latest_occurrence.dt_nasc or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", birth_date):
+        year, month, day = birth_date.split("-")
+        birth_date = f"{day}/{month}/{year}"
+
+    benefit = (latest_occurrence.nu_nb or latest_occurrence.matricula or "").strip()
+    income = latest_occurrence.vl_rmi if latest_occurrence.vl_rmi is not None else latest_occurrence.salario
+
+    return JSONResponse(
+        {
+            "cpf": normalized_cpf,
+            "benefit": benefit,
+            "birth_date": birth_date,
+            "income_amount": float(income) if income is not None else 0.0,
+            "updated_at": latest_occurrence.criado_em.isoformat() if latest_occurrence.criado_em else "",
+        }
+    )
+
+
 def c6_inss_include_page(
     request: Request,
-    _current_user: AppUser = Depends(require_permission("can_search")),
+    _current_user: AppUser = Depends(require_permission("can_access_consignado_inss")),
 ) -> HTMLResponse:
     q = request.query_params
     return render_template(
@@ -1462,7 +1111,6 @@ def c6_inss_include_page(
     )
 
 
-@app.post("/c6-inss/include", response_class=HTMLResponse)
 def c6_inss_include_submit(
     request: Request,
     tax_identifier: str = Form(""),
@@ -1492,7 +1140,7 @@ def c6_inss_include_submit(
     selected_product_description: str = Form(""),
     selected_installment_amount: str = Form(""),
     selected_monthly_rate: str = Form(""),
-    current_user: AppUser = Depends(require_permission("can_search")),
+    current_user: AppUser = Depends(require_permission("can_access_consignado_inss")),
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
     try:
@@ -1509,10 +1157,12 @@ def c6_inss_include_submit(
             "client": {
                 "tax_identifier": tax_identifier.strip(),
                 "enrollment": enrollment.strip(),
-                "birth_date": birth_date.strip() if "-" in birth_date else f"{birth_date[6:10]}-{birth_date[3:5]}-{birth_date[0:2]}",
+                "birth_date": datetime.strptime(birth_date.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
+                if "/" in birth_date
+                else birth_date.strip(),
                 "income_amount": float(str(income_amount).replace(".", "").replace(",", ".")),
             },
-            "payment": {
+            "banking_data": {
                 "bank_code": bank_code.strip(),
                 "agency_number": agency_number.strip(),
                 "agency_digit": agency_digit.strip(),
@@ -1520,38 +1170,33 @@ def c6_inss_include_submit(
                 "account_number": account_number.strip(),
                 "account_digit": account_digit.strip(),
                 "account_holder_name": account_holder_name.strip(),
-                "account_holder_tax_identifier": account_holder_tax_identifier.strip(),
+                "account_holder_tax_identifier": account_holder_tax_identifier.strip() or tax_identifier.strip(),
             },
         }
-        # Guarda a condicao selecionada para rastreabilidade operacional.
-        if selected_covenant_code or selected_product_code:
-            payload["selected_condition"] = {
-                "covenant_code": selected_covenant_code,
-                "covenant_description": selected_covenant_description,
-                "product_code": selected_product_code,
-                "product_description": selected_product_description,
-                "installment_amount": selected_installment_amount,
-                "monthly_customer_rate": selected_monthly_rate,
-            }
-    except Exception:
-        return render_template(request, "c6_inss_include.html", {"title": "Inclusao Proposta INSS C6", "error": "Preencha os campos corretamente.", "result": None}, status_code=400)
-
-    try:
         response = c6_worker_loan_client.include_inss_proposal(payload)
         log_audit(
             session,
             current_user.username,
-            "c6_inss_proposal_included",
+            "c6_inss_inclusion_requested",
             target_type="integration",
-            message="Operacao C6 INSS inclusao executada.",
+            message="Inclusao C6 INSS executada.",
             metadata={"path": str(request.url.path), "action": "include"},
         )
         session.commit()
         result = {"status_code": response.status_code, "data": response.payload, "action": "include", "payload_enviado": payload}
         error = ""
-    except C6WorkerLoanError as exc:
+    except Exception as exc:
         result = None
-        error = f"{exc}\nPayload enviado: {json.dumps(payload, ensure_ascii=False)}"
+        error = build_c6_user_friendly_error(exc)
+        log_audit(
+            session,
+            current_user.username,
+            "c6_inss_inclusion_failed",
+            target_type="integration",
+            message=error,
+            metadata={"path": str(request.url.path), "action": "include", "technical_error": str(exc)},
+        )
+        session.commit()
 
     return render_template(
         request,
@@ -1592,219 +1237,81 @@ def c6_inss_include_submit(
     )
 
 
-@app.post("/c6-worker", response_class=HTMLResponse)
-def c6_worker_submit(
-    request: Request,
-    action: str = Form(...),
-    worker_cpf: str = Form(""),
-    simulation_type: str = Form("POR_VALOR_PARCELA"),
-    simulation_prazo: str = Form(""),
-    simulation_installment_value: str = Form(""),
-    simulation_requested_amount: str = Form(""),
-    simulation_version: str = Form("v2"),
-    include_id_simulacao: str = Form(""),
-    include_ddd: str = Form(""),
-    include_numero_telefone: str = Form(""),
-    include_logradouro: str = Form(""),
-    include_numero: str = Form(""),
-    include_cep: str = Form(""),
-    include_bairro: str = Form(""),
-    include_cidade: str = Form(""),
-    include_uf: str = Form(""),
-    include_codigo_origem_6: str = Form(""),
-    include_numero_cpf_certificado: str = Form(""),
-    include_tipo_conta: str = Form("ContaCorrenteIndividual"),
-    include_numero_banco: str = Form(""),
-    include_numero_agencia: str = Form(""),
-    include_digito_agencia: str = Form(""),
-    include_numero_conta: str = Form(""),
-    include_digito_conta: str = Form(""),
-    auth_nome: str = Form(""),
-    auth_data_nascimento: str = Form(""),
-    auth_ddd: str = Form(""),
-    auth_numero_telefone: str = Form(""),
-    current_user: AppUser = Depends(require_permission("can_search")),
-    session: Session = Depends(get_session),
-) -> HTMLResponse:
-    action = (action or "").strip().lower()
-    action_aliases = {
-        "authorization-generate": "authorization_generate",
-        "authorization_generate_liveness": "authorization_generate",
-        "auth_generate": "authorization_generate",
-        "authorization": "authorization_generate",
-        "authorization-status": "authorization_status",
-        "auth_status": "authorization_status",
-    }
-    action = action_aliases.get(action, action)
-
-    if action not in {"offer", "simulation", "include", "authorization_generate", "authorization_status"}:
-        if auth_nome.strip() or auth_data_nascimento.strip() or auth_ddd.strip() or auth_numero_telefone.strip():
-            action = "authorization_generate"
-        elif worker_cpf.strip():
-            action = "authorization_status"
-
-    def render_worker(result: dict[str, object] | None, error: str, status_code: int) -> HTMLResponse:
-        return render_template(
-            request,
-            "c6_worker.html",
-            {
-                "title": "Credito do Trabalhador C6",
-                "result": result,
-                "error": error,
-                "active_action": action,
-                "worker_cpf": worker_cpf,
-                "auth_nome": auth_nome,
-                "auth_data_nascimento": auth_data_nascimento,
-                "auth_ddd": auth_ddd,
-                "auth_numero_telefone": auth_numero_telefone,
-                "simulation_type": simulation_type,
-                "simulation_prazo": simulation_prazo,
-                "simulation_installment_value": simulation_installment_value,
-                "simulation_requested_amount": simulation_requested_amount,
-                "simulation_version": simulation_version,
-                "include_id_simulacao": include_id_simulacao,
-                "include_ddd": include_ddd,
-                "include_numero_telefone": include_numero_telefone,
-                "include_logradouro": include_logradouro,
-                "include_numero": include_numero,
-                "include_cep": include_cep,
-                "include_bairro": include_bairro,
-                "include_cidade": include_cidade,
-                "include_uf": include_uf,
-                "include_codigo_origem_6": include_codigo_origem_6,
-                "include_numero_cpf_certificado": include_numero_cpf_certificado,
-                "include_tipo_conta": include_tipo_conta,
-                "include_numero_banco": include_numero_banco,
-                "include_numero_agencia": include_numero_agencia,
-                "include_digito_agencia": include_digito_agencia,
-                "include_numero_conta": include_numero_conta,
-                "include_digito_conta": include_digito_conta,
-            },
-            status_code=status_code,
-        )
-
-    cpf_digits = "".join(ch for ch in worker_cpf if ch.isdigit())
-    if len(cpf_digits) != 11:
-        return render_worker(None, "CPF invalido. Informe 11 digitos.", 400)
-
-    payload: dict[str, object]
-    try:
-        if action == "offer":
-            payload = {"cpf_cliente": cpf_digits}
-            response = c6_worker_loan_client.generate_offer(payload)
-            action_name = "c6_worker_offer_generated"
-        elif action == "simulation":
-            payload = {"cpf": cpf_digits, "tipo_simulacao": simulation_type}
-            if simulation_type in {"POR_VALOR_PARCELA", "POR_VALOR_SOLICITADO"}:
-                if not simulation_prazo.strip():
-                    raise ValueError("Prazo e obrigatorio para o tipo de simulacao informado.")
-                payload["prazo"] = int(simulation_prazo)
-            if simulation_type == "POR_VALOR_PARCELA":
-                if not simulation_installment_value.strip():
-                    raise ValueError("Valor da parcela e obrigatorio para simulacao por parcela.")
-                payload["valor_parcela"] = float(simulation_installment_value.replace(",", "."))
-            if simulation_type == "POR_VALOR_SOLICITADO":
-                if not simulation_requested_amount.strip():
-                    raise ValueError("Valor solicitado e obrigatorio para simulacao por valor solicitado.")
-                payload["valor_solicitado"] = float(simulation_requested_amount.replace(",", "."))
-            response = c6_worker_loan_client.simulate_proposal(payload, version=simulation_version)
-            action_name = "c6_worker_simulation_requested"
-        elif action == "include":
-            payload = {
-                "id_simulacao": include_id_simulacao.strip(),
-                "cpf": cpf_digits,
-                "ddd": include_ddd.strip(),
-                "numero_telefone": include_numero_telefone.strip(),
-                "logradouro": include_logradouro.strip(),
-                "numero": include_numero.strip(),
-                "cep": include_cep.strip(),
-                "bairro": include_bairro.strip(),
-                "cidade": include_cidade.strip(),
-                "uf": include_uf.strip().upper(),
-                "codigo_origem_6": include_codigo_origem_6.strip(),
-                "numero_cpf_certificado": include_numero_cpf_certificado.strip(),
-                "dados_bancarios": {
-                    "tipo_conta": include_tipo_conta.strip(),
-                    "numero_banco": include_numero_banco.strip(),
-                    "numero_agencia": include_numero_agencia.strip(),
-                    "digito_agencia": include_digito_agencia.strip(),
-                    "numero_conta": include_numero_conta.strip(),
-                    "digito_conta": include_digito_conta.strip(),
-                },
-            }
-            response = c6_worker_loan_client.include_proposal(payload)
-            action_name = "c6_worker_proposal_included"
-        elif action == "authorization_generate":
-            if not auth_nome.strip():
-                raise ValueError("Nome e obrigatorio para gerar o link de autorizacao.")
-            try:
-                data_nascimento_api = datetime.strptime(auth_data_nascimento.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
-            except ValueError:
-                raise ValueError("Data de nascimento invalida. Use o formato dd/mm/aaaa.")
-            payload = {"nome": auth_nome.strip(), "cpf": cpf_digits, "data_nascimento": data_nascimento_api}
-            telefone_numero = "".join(ch for ch in auth_numero_telefone if ch.isdigit())
-            telefone_ddd = "".join(ch for ch in auth_ddd if ch.isdigit())
-            if telefone_numero or telefone_ddd:
-                payload["telefone"] = {"numero": telefone_numero, "codigo_area": telefone_ddd}
-            response = c6_worker_loan_client.generate_authorization_liveness(payload)
-            action_name = "c6_worker_authorization_link_generated"
-        elif action == "authorization_status":
-            payload = {"cpf": cpf_digits}
-            response = c6_worker_loan_client.authorization_status(payload)
-            action_name = "c6_worker_authorization_status_checked"
-        else:
-            raise ValueError("Acao invalida.")
-
-        result = {
-            "status_code": response.status_code,
-            "data": response.payload,
-            "action": action,
-            "payload_enviado": payload,
-        }
-        log_audit(
-            session,
-            current_user.username,
-            action_name,
-            target_type="integration",
-            message="Operacao C6 executada na area de credito do trabalhador.",
-            metadata={"path": str(request.url.path), "action": action},
-        )
-        session.commit()
-        return render_worker(result, "", 200)
-    except (ValueError, C6WorkerLoanError) as exc:
-        fallback_payload = locals().get("payload", {})
-        return render_worker(None, f"{exc}\nPayload enviado: {json.dumps(fallback_payload, ensure_ascii=False)}", 400)
-
-
-@app.get("/", response_class=HTMLResponse)
 def home(
     request: Request,
     current_user: AppUser = Depends(require_permission("can_view_dashboard")),
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
-    total_batches = session.scalar(select(func.count()).select_from(ImportBatch)) or 0
-    completed_batches = session.scalar(select(func.count()).select_from(ImportBatch).where(ImportBatch.status == "CONCLUIDO")) or 0
-    total_files = session.scalar(select(func.count()).select_from(SourceFile)) or 0
-    total_occurrences = session.scalar(select(func.count()).select_from(ClientOccurrence)) or 0
-    total_clients = session.scalar(select(func.count()).select_from(Client)) or 0
-    total_with_phone = session.scalar(select(func.count()).select_from(Client).where(Client.tem_telefone.is_(True))) or 0
+    now_utc = current_utc()
+    with home_dashboard_cache_lock:
+        cached_expires_at = home_dashboard_cache.get("expires_at")
+        cached_context = home_dashboard_cache.get("context")
+        if isinstance(cached_expires_at, datetime) and cached_expires_at > now_utc and isinstance(cached_context, dict):
+            return render_template(
+                request,
+                "home.html",
+                dict(cached_context),
+            )
+
+    batch_stats = session.execute(
+        select(
+            func.count(ImportBatch.id),
+            func.sum(case((ImportBatch.status == "CONCLUIDO", 1), else_=0)),
+        )
+    ).one()
+    total_batches = int(batch_stats[0] or 0)
+    completed_batches = int(batch_stats[1] or 0)
+
+    total_files = int(session.scalar(select(func.count(SourceFile.id))) or 0)
+    total_occurrences = int(session.scalar(select(func.count(ClientOccurrence.id))) or 0)
+
+    client_stats = session.execute(
+        select(
+            func.count(Client.cpf),
+            func.sum(case((Client.tem_telefone.is_(True), 1), else_=0)),
+            func.sum(case((Client.do_not_call.is_(True), 1), else_=0)),
+            func.sum(case((Client.tem_telefone.is_(True), case((Client.do_not_call.is_(False), 1), else_=0)), else_=0)),
+        )
+    ).one()
+    total_clients = int(client_stats[0] or 0)
+    total_with_phone = int(client_stats[1] or 0)
+    total_do_not_call = int(client_stats[2] or 0)
+    total_actionable = int(client_stats[3] or 0)
+
     latest_exports = session.execute(select(ExportHistory).order_by(ExportHistory.criado_em.desc()).limit(5)).scalars().all()
     latest_audits = session.execute(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(5)).scalars().all()
-    segment_stats = [
-        {
-            "segment": segment,
-            "label": base_segment_label(segment),
-            "occurrences": session.scalar(select(func.count()).select_from(ClientOccurrence).where(ClientOccurrence.base_segment == segment)) or 0,
-            "clients": session.scalar(select(func.count(func.distinct(ClientOccurrence.cpf))).where(ClientOccurrence.base_segment == segment)) or 0,
-            "with_phone": session.scalar(
-                select(func.count(func.distinct(ClientOccurrence.cpf))).where(
-                    ClientOccurrence.base_segment == segment,
-                    or_(ClientOccurrence.telefone1 != "", ClientOccurrence.telefone2 != "", ClientOccurrence.telefone3 != ""),
-                )
-            ) or 0,
-        }
-        for segment, _label in BASE_SEGMENT_OPTIONS
-    ]
+    has_phone_occurrence = or_(
+        ClientOccurrence.telefone1 != "",
+        ClientOccurrence.telefone2 != "",
+        ClientOccurrence.telefone3 != "",
+    )
+    segment_rows = session.execute(
+        select(
+            ClientOccurrence.base_segment,
+            func.count(ClientOccurrence.id),
+            func.count(func.distinct(ClientOccurrence.cpf)),
+            func.count(func.distinct(case((has_phone_occurrence, ClientOccurrence.cpf), else_=None))),
+        )
+        .where(ClientOccurrence.base_segment.in_([segment for segment, _ in BASE_SEGMENT_OPTIONS]))
+        .group_by(ClientOccurrence.base_segment)
+    ).all()
+    segment_map = {
+        row[0]: {"occurrences": int(row[1] or 0), "clients": int(row[2] or 0), "with_phone": int(row[3] or 0)}
+        for row in segment_rows
+    }
+    segment_stats = []
+    for segment, _label in BASE_SEGMENT_OPTIONS:
+        stats = segment_map.get(segment, {"occurrences": 0, "clients": 0, "with_phone": 0})
+        segment_stats.append(
+            {
+                "segment": segment,
+                "label": base_segment_label(segment),
+                "occurrences": stats["occurrences"],
+                "clients": stats["clients"],
+                "with_phone": stats["with_phone"],
+            }
+        )
+
     top_states = session.execute(
         select(Client.uf_atual, func.count())
         .where(Client.uf_atual != "")
@@ -1814,20 +1321,16 @@ def home(
     ).all()
 
     if total_clients == 0 and total_occurrences > 0:
-        has_phone_filter = or_(
-            ClientOccurrence.telefone1 != "",
-            ClientOccurrence.telefone2 != "",
-            ClientOccurrence.telefone3 != "",
-        )
-        total_clients = session.scalar(select(func.count(func.distinct(ClientOccurrence.cpf))).select_from(ClientOccurrence)) or 0
-        total_with_phone = (
-            session.scalar(
-                select(func.count(func.distinct(ClientOccurrence.cpf)))
-                .select_from(ClientOccurrence)
-                .where(has_phone_filter)
+        fallback_stats = session.execute(
+            select(
+                func.count(func.distinct(ClientOccurrence.cpf)),
+                func.count(func.distinct(case((has_phone_occurrence, ClientOccurrence.cpf), else_=None))),
             )
-            or 0
-        )
+        ).one()
+        total_clients = int(fallback_stats[0] or 0)
+        total_with_phone = int(fallback_stats[1] or 0)
+        total_actionable = total_with_phone
+        total_do_not_call = 0
         top_states = session.execute(
             select(ClientOccurrence.uf, func.count(func.distinct(ClientOccurrence.cpf)))
             .where(ClientOccurrence.uf != "")
@@ -1839,8 +1342,12 @@ def home(
     latest_batches = session.execute(select(ImportBatch).order_by(ImportBatch.data_importacao.desc()).limit(4)).scalars().all()
 
     phone_ratio = round((total_with_phone / total_clients) * 100, 1) if total_clients else 0
+    actionable_ratio = round((total_actionable / total_clients) * 100, 1) if total_clients else 0
+    do_not_call_ratio = round((total_do_not_call / total_clients) * 100, 1) if total_clients else 0
     no_phone_ratio = round(100 - phone_ratio, 1) if total_clients else 0
     total_without_phone = max(total_clients - total_with_phone, 0)
+    duplicate_records = max(total_occurrences - total_clients, 0)
+    duplicate_ratio = round((duplicate_records / total_occurrences) * 100, 1) if total_occurrences else 0
     state_total = sum(item[1] for item in top_states) or 1
     states_chart = [
         {"uf": uf or "N/D", "count": count, "pct": round((count / state_total) * 100, 1)}
@@ -1852,37 +1359,97 @@ def home(
     avg_records_per_file = round(total_occurrences / total_files) if total_files else 0
     avg_clients_per_campaign = round(total_clients / total_batches) if total_batches else 0
     file_per_campaign = round(total_files / total_batches, 1) if total_batches else 0
-    return render_template(
-        request,
-        "home.html",
-        {
-            "title": "Inicio",
-            "current_user": current_user,
-            "total_batches": total_batches,
-            "total_files": total_files,
-            "total_occurrences": total_occurrences,
-            "total_clients": total_clients,
-            "total_with_phone": total_with_phone,
-            "total_without_phone": total_without_phone,
-            "phone_ratio": phone_ratio,
-            "no_phone_ratio": no_phone_ratio,
-            "completed_batches": completed_batches,
-            "avg_records_per_file": avg_records_per_file,
-            "avg_clients_per_campaign": avg_clients_per_campaign,
-            "file_per_campaign": file_per_campaign,
-            "latest_batch_label": format_dashboard_datetime(latest_batch.data_importacao) if latest_batch else "-",
-            "latest_export_label": format_dashboard_datetime(latest_export.criado_em) if latest_export else "-",
-            "top_state": top_state,
-            "states_chart": states_chart,
-            "latest_batches": latest_batches,
-            "latest_exports": latest_exports,
-            "latest_audits": latest_audits,
-            "segment_stats": segment_stats,
-        },
-    )
+    fresh_stats = session.execute(
+        select(
+            func.sum(case((Client.atualizado_em >= now_utc - timedelta(days=30), 1), else_=0)),
+            func.sum(case((Client.atualizado_em >= now_utc - timedelta(days=60), 1), else_=0)),
+            func.sum(case((Client.atualizado_em >= now_utc - timedelta(days=90), 1), else_=0)),
+        )
+        .select_from(Client)
+    ).one()
+    fresh_30 = int(fresh_stats[0] or 0)
+    fresh_60 = int(fresh_stats[1] or 0)
+    fresh_90 = int(fresh_stats[2] or 0)
+    fresh_30_ratio = round((fresh_30 / total_clients) * 100, 1) if total_clients else 0
+    fresh_60_ratio = round((fresh_60 / total_clients) * 100, 1) if total_clients else 0
+    fresh_90_ratio = round((fresh_90 / total_clients) * 100, 1) if total_clients else 0
+    actionable_states = session.execute(
+        select(Client.uf_atual, func.count())
+        .where(
+            Client.uf_atual != "",
+            Client.tem_telefone.is_(True),
+            Client.do_not_call.is_(False),
+        )
+        .group_by(Client.uf_atual)
+        .order_by(func.count().desc())
+        .limit(5)
+    ).all()
+    actionable_states_total = sum(item[1] for item in actionable_states) or 1
+    actionable_states_chart = [
+        {"uf": uf or "N/D", "count": count, "pct": round((count / actionable_states_total) * 100, 1)}
+        for uf, count in actionable_states
+    ]
+    avg_export_hours_from_import = 0.0
+    if latest_exports and latest_batches:
+        batch_times = sorted(
+            [item.data_importacao for item in latest_batches if item.data_importacao is not None]
+        )
+        deltas_in_hours: list[float] = []
+        for export in latest_exports:
+            if export.criado_em is None:
+                continue
+            candidates = [timestamp for timestamp in batch_times if timestamp <= export.criado_em]
+            if not candidates:
+                continue
+            nearest_batch = candidates[-1]
+            delta_hours = (export.criado_em - nearest_batch).total_seconds() / 3600
+            if delta_hours >= 0:
+                deltas_in_hours.append(delta_hours)
+        if deltas_in_hours:
+            avg_export_hours_from_import = round(sum(deltas_in_hours) / len(deltas_in_hours), 1)
+    dashboard_context = {
+        "title": "Inicio",
+        "total_batches": total_batches,
+        "total_files": total_files,
+        "total_occurrences": total_occurrences,
+        "total_clients": total_clients,
+        "total_with_phone": total_with_phone,
+        "total_without_phone": total_without_phone,
+        "phone_ratio": phone_ratio,
+        "actionable_ratio": actionable_ratio,
+        "do_not_call_ratio": do_not_call_ratio,
+        "no_phone_ratio": no_phone_ratio,
+        "total_actionable": total_actionable,
+        "total_do_not_call": total_do_not_call,
+        "duplicate_records": duplicate_records,
+        "duplicate_ratio": duplicate_ratio,
+        "fresh_30": fresh_30,
+        "fresh_60": fresh_60,
+        "fresh_90": fresh_90,
+        "fresh_30_ratio": fresh_30_ratio,
+        "fresh_60_ratio": fresh_60_ratio,
+        "fresh_90_ratio": fresh_90_ratio,
+        "actionable_states_chart": actionable_states_chart,
+        "avg_export_hours_from_import": avg_export_hours_from_import,
+        "completed_batches": completed_batches,
+        "avg_records_per_file": avg_records_per_file,
+        "avg_clients_per_campaign": avg_clients_per_campaign,
+        "file_per_campaign": file_per_campaign,
+        "latest_batch_label": format_dashboard_datetime(latest_batch.data_importacao) if latest_batch else "-",
+        "latest_export_label": format_dashboard_datetime(latest_export.criado_em) if latest_export else "-",
+        "top_state": top_state,
+        "states_chart": states_chart,
+        "latest_batches": latest_batches,
+        "latest_exports": latest_exports,
+        "latest_audits": latest_audits,
+        "segment_stats": segment_stats,
+    }
+    with home_dashboard_cache_lock:
+        home_dashboard_cache["context"] = dict(dashboard_context)
+        home_dashboard_cache["expires_at"] = now_utc + timedelta(seconds=HOME_DASHBOARD_CACHE_TTL_SECONDS)
+    return render_template(request, "home.html", dashboard_context)
 
 
-@app.get("/import", response_class=HTMLResponse)
 def import_page(request: Request, _current_user: AppUser = Depends(require_permission("can_import"))) -> HTMLResponse:
     session = SessionLocal()
     try:
@@ -1915,11 +1482,10 @@ def import_page(request: Request, _current_user: AppUser = Depends(require_permi
     )
 
 
-@app.post("/import", response_class=HTMLResponse, response_model=None)
 async def run_import(
     request: Request,
-    year: int = Form(...),
-    month: int = Form(...),
+    year: str = Form(""),
+    month: str = Form(""),
     base_segment: str = Form("INSS"),
     base_source: str = Form(""),
     user_name: str = Form("operador"),
@@ -1932,6 +1498,29 @@ async def run_import(
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
     normalized_segment = normalize_base_segment(base_segment)
+    now = datetime.now()
+    if normalized_segment == "INSS":
+        try:
+            year_value = int(str(year or "").strip())
+            month_value = int(str(month or "").strip())
+        except ValueError:
+            return render_template(
+                request,
+                "import.html",
+                {"summary": None, "error": "Informe ano e mes validos para importar INSS.", "title": "Importacao", "selected_base_segment": normalized_segment},
+                status_code=400,
+            )
+        if year_value < 2020 or year_value > 2100 or month_value < 1 or month_value > 12:
+            return render_template(
+                request,
+                "import.html",
+                {"summary": None, "error": "Ano/mes fora do intervalo permitido para importacao.", "title": "Importacao", "selected_base_segment": normalized_segment},
+                status_code=400,
+            )
+    else:
+        year_value = now.year
+        month_value = now.month
+
     selected_paths: list[Path] = []
     if server_folder.strip():
         folder = Path(server_folder.strip())
@@ -1945,8 +1534,8 @@ async def run_import(
         return render_template(request, "import.html", {"summary": None, "error": "Envie arquivos ou informe uma pasta do servidor.", "title": "Importacao"}, status_code=400)
 
     import_request = ImportRequest(
-        year=year,
-        month=month,
+        year=year_value,
+        month=month_value,
         user_name=current_user.username,
         origin_folder=origin_folder,
         files=selected_paths,
@@ -1964,11 +1553,37 @@ async def run_import(
         message="Importacao iniciada.",
         metadata={"segmento": normalized_segment, "fonte": base_source, "arquivos": [path.name for path in selected_paths]},
     )
-    enqueue_import_job(session, batch_id=batch.id, request_data=import_request, requested_by=current_user.username)
+    session.commit()
+    current_request_id = getattr(request.state, "request_id", request_id_ctx.get("-"))
+    log_event(
+        logging.INFO,
+        "import_batch_created",
+        "Importacao colocada em fila.",
+        user=current_user.username,
+        request_id=current_request_id,
+        data={"batch_id": batch.id, "segmento": normalized_segment, "files": len(selected_paths)},
+    )
+    enqueue_result = enqueue_import_job_service(batch.id, import_request, current_request_id)
+    batch.queue_backend = enqueue_result.get("enqueue_mode", "thread")
+    batch.queue_name = enqueue_result.get("queue_name", settings.queue_imports_name)
+    batch.queue_job_id = enqueue_result.get("queue_job_id", "")
+    session.commit()
+    log_event(
+        logging.INFO,
+        "import_batch_enqueued",
+        "Job de importacao enfileirado.",
+        user=current_user.username,
+        request_id=current_request_id,
+        data={
+            "batch_id": batch.id,
+            "enqueue_mode": enqueue_result.get("enqueue_mode", "thread"),
+            "queue_backend": settings.queue_backend,
+            "queue_job_id": enqueue_result.get("queue_job_id", ""),
+        },
+    )
     return RedirectResponse(url=f"/history/{batch.id}", status_code=303)
 
 
-@app.post("/import/public-update-import")
 async def run_public_update_import_from_import_page(
     base_segment: str = Form("GOVERNO"),
     source_name: str = Form(""),
@@ -2019,7 +1634,6 @@ async def run_public_update_import_from_import_page(
     )
 
 
-@app.get("/clients", response_class=HTMLResponse)
 def clients_page(
     request: Request,
     base_segment: str = "INSS",
@@ -2042,8 +1656,6 @@ def clients_page(
     has_phone: str = "",
     source_file: str = "",
     cpf: str = "",
-    selected_benefit: str = "",
-    selected_occurrence_id: str = "",
     phone: str = "",
     ddd: str = "",
     name: str = "",
@@ -2053,21 +1665,22 @@ def clients_page(
     def has_value(value: object) -> bool:
         return bool(str(value or "").strip())
 
+    safe_page = parse_optional_int(str(page)) or 1
     normalized_segment = normalize_base_segment(base_segment)
     filters = FilterSet(
         base_segment=normalized_segment,
         quick_mode="telefone" if quick_mode == "telefone" else "cpf",
         quick_value=quick_value,
-        year=int(year) if year else None,
-        month=int(month) if month else None,
+        year=parse_optional_int(year),
+        month=parse_optional_int(month),
         week=week,
         uf=uf,
         city=city,
         esp=esp,
         margin_min=parse_decimal(margin_min),
         margin_max=parse_decimal(margin_max),
-        age_min=int(age_min) if age_min else None,
-        age_max=int(age_max) if age_max else None,
+        age_min=parse_optional_int(age_min),
+        age_max=parse_optional_int(age_max),
         has_phone=True if has_phone == "sim" else False if has_phone == "nao" else None,
         source_file=source_file,
         base_source=base_source,
@@ -2100,90 +1713,14 @@ def clients_page(
             bool(selected_servico.strip()),
         ]
     )
-    safe_page = page if page and page > 0 else 1
     total_results = 0
     pagination = build_pagination(total_results, 1, CLIENTS_PAGE_SIZE)
     results: list[dict[str, object]] = []
-    inss_benefit_choices: list[dict[str, str]] = []
     if has_active_lookup:
-        offset = (safe_page - 1) * CLIENTS_PAGE_SIZE
-        window = query_clients(session, filters, limit=CLIENTS_PAGE_SIZE + 1, offset=offset)
-        has_next = len(window) > CLIENTS_PAGE_SIZE
-        results = window[:CLIENTS_PAGE_SIZE]
-        total_results = offset + len(results) + (1 if has_next else 0)
-        pagination = {
-            "page": safe_page,
-            "page_size": CLIENTS_PAGE_SIZE,
-            "total_items": total_results,
-            "total_pages": safe_page + 1 if has_next else safe_page,
-            "offset": offset,
-            "has_prev": safe_page > 1,
-            "has_next": has_next,
-            "prev_page": max(safe_page - 1, 1),
-            "next_page": safe_page + 1 if has_next else safe_page,
-        }
-        if normalized_segment == "INSS" and has_value(quick_value) and results:
-            cpfs_in_result = {str(row.get("cpf", "")).strip() for row in results if str(row.get("cpf", "")).strip()}
-            if len(cpfs_in_result) == 1:
-                only_cpf = next(iter(cpfs_in_result))
-                choice_rows = (
-                    session.execute(
-                        select(
-                            ClientOccurrence.id,
-                            ClientOccurrence.nu_nb,
-                            ClientOccurrence.esp,
-                            ClientOccurrence.ddb,
-                            ClientOccurrence.nome,
-                            ImportBatch.ano_referencia,
-                            ImportBatch.mes_referencia,
-                        )
-                        .join(SourceFile, SourceFile.id == ClientOccurrence.source_file_id)
-                        .join(ImportBatch, ImportBatch.id == SourceFile.batch_id)
-                        .where(
-                            ClientOccurrence.cpf == only_cpf,
-                            ClientOccurrence.base_segment == "INSS",
-                        )
-                        .order_by(
-                            ImportBatch.ano_referencia.desc(),
-                            ImportBatch.mes_referencia.desc(),
-                            SourceFile.id.desc(),
-                            ClientOccurrence.id.desc(),
-                        )
-                    )
-                    .all()
-                )
-                seen_choice_keys: set[tuple[str, str, str, str]] = set()
-                for occurrence_id, nu_nb, esp_value, ddb_value, nome_value, ano_ref, mes_ref in choice_rows:
-                    benefit = _norm_text(nu_nb)
-                    species = _norm_text(esp_value)
-                    ddb_text = _norm_text(ddb_value)
-                    reference = f"{int(mes_ref):02d}/{int(ano_ref)}" if mes_ref and ano_ref else "-"
-                    choice_key = (benefit, species, ddb_text, reference)
-                    if choice_key in seen_choice_keys:
-                        continue
-                    seen_choice_keys.add(choice_key)
-                    inss_benefit_choices.append(
-                        {
-                            "occurrence_id": str(occurrence_id),
-                            "cpf": only_cpf,
-                            "client_name": _norm_text(nome_value),
-                            "benefit": benefit or "Sem numero",
-                            "species": species or "-",
-                            "species_meaning": get_species_meaning(species),
-                            "ddb": ddb_text or "-",
-                            "reference": reference,
-                        }
-                    )
+        total_results = count_client_results(session, filters)
+        pagination = build_pagination(total_results, safe_page, CLIENTS_PAGE_SIZE)
+        results = query_clients(session, filters, limit=CLIENTS_PAGE_SIZE, offset=int(pagination["offset"]))
     highlight = results[0] if results and has_active_lookup else None
-    if normalized_segment == "INSS":
-        chosen_occurrence_id = _norm_text(selected_occurrence_id)
-        if chosen_occurrence_id:
-            highlight = next(
-                (row for row in results if str(row.get("occurrence_id", "")) == chosen_occurrence_id),
-                highlight,
-            )
-        elif len(inss_benefit_choices) > 1:
-            highlight = None
     public_rows = results if normalized_segment in {"GOVERNO", "PREFEITURA"} else []
     has_public_matriculas = False
     if public_rows:
@@ -2228,6 +1765,66 @@ def clients_page(
     saved_filters = session.execute(
         select(SavedFilter).where(SavedFilter.user_id == current_user.id, SavedFilter.page_key == "clients").order_by(SavedFilter.created_at.desc()).limit(10)
     ).scalars().all()
+    crefaz_related_accounts: list[dict[str, str]] = []
+    if normalized_segment == "CREFAZ" and highlight:
+        related_rows = session.execute(
+            select(
+                ClientOccurrence.nome,
+                ClientOccurrence.cpf,
+                ClientOccurrence.cpf_original,
+                ClientOccurrence.telefone1,
+                ClientOccurrence.telefone2,
+                ClientOccurrence.telefone3,
+                ClientOccurrence.cidade,
+                ClientOccurrence.uf,
+                ClientOccurrence.extras_json,
+            )
+            .where(
+                ClientOccurrence.base_segment == "CREFAZ",
+                ClientOccurrence.cpf == str(highlight.get("cpf") or ""),
+            )
+            .order_by(ClientOccurrence.id.desc())
+            .limit(500)
+        ).all()
+        seen_related_keys: set[tuple[str, str, str]] = set()
+        for item in related_rows:
+            extras: dict[str, object] = {}
+            if item.extras_json:
+                try:
+                    extras = json.loads(item.extras_json)
+                except json.JSONDecodeError:
+                    extras = {}
+            numero_cliente = str(
+                extras.get("NÂº DO CLIENTE")
+                or extras.get("N DO CLIENTE")
+                or extras.get("NRO CLIENTE")
+                or extras.get("NUMERO CLIENTE")
+                or ""
+            ).strip()
+            conta_contrato = str(extras.get("CONTA CONTRATO") or extras.get("CONTA_CONTRATO") or "").strip()
+            numero_instalacao = str(
+                extras.get("NUMERO INSTALAÃ‡ÃƒO")
+                or extras.get("NUMERO INSTALACAO")
+                or extras.get("NÂº INSTALACAO")
+                or extras.get("N INSTALACAO")
+                or ""
+            ).strip()
+            dedupe_key = (numero_cliente, conta_contrato, numero_instalacao)
+            if dedupe_key in seen_related_keys:
+                continue
+            seen_related_keys.add(dedupe_key)
+            crefaz_related_accounts.append(
+                {
+                    "nome": str(item.nome or "").strip(),
+                    "cpf_original": str(item.cpf_original or item.cpf or "").strip(),
+                    "telefone": str(item.telefone1 or item.telefone2 or item.telefone3 or "").strip(),
+                    "numero_cliente": numero_cliente,
+                    "conta_contrato": conta_contrato,
+                    "numero_instalacao": numero_instalacao,
+                    "cidade": str(item.cidade or "").strip(),
+                    "uf": str(item.uf or "").strip(),
+                }
+            )
     return render_template(
         request,
         "clients.html",
@@ -2242,12 +1839,11 @@ def clients_page(
             "selected_base_segment": normalized_segment,
             "selected_matricula": selected_matricula,
             "selected_servico": selected_servico,
-            "selected_occurrence_id": selected_occurrence_id,
             "selection_query": selection_query,
             "has_public_matriculas": has_public_matriculas,
-            "inss_benefit_choices": inss_benefit_choices,
             "pagination": pagination,
             "saved_filters": saved_filters,
+            "crefaz_related_accounts": crefaz_related_accounts,
             "favorite_query": urlencode(build_filter_query_params(filters, normalized_segment, selected_matricula=selected_matricula, selected_servico=selected_servico)),
             "current_query_url": str(request.url.path) + (("?" + request.url.query) if request.url.query else ""),
             "message": request.query_params.get("message", ""),
@@ -2256,11 +1852,12 @@ def clients_page(
     )
 
 
-@app.get("/exports", response_class=HTMLResponse)
 def exports_page(
     request: Request,
     base_segment: str = "INSS",
     base_source: str = "",
+    job_status: str = "",
+    job_backend: str = "",
     message: str = "",
     error: str = "",
     current_user: AppUser = Depends(require_permission("can_export")),
@@ -2268,17 +1865,15 @@ def exports_page(
 ) -> HTMLResponse:
     normalized_segment = normalize_base_segment(base_segment)
     normalized_source = base_source.strip()
+    normalized_job_status = (job_status or "").strip().upper()
+    normalized_job_backend = (job_backend or "").strip().lower()
     exports = session.execute(select(ExportHistory).order_by(ExportHistory.criado_em.desc()).limit(50)).scalars().all()
-    export_jobs = (
-        session.execute(
-            select(ExportJob)
-            .where(ExportJob.requested_by == current_user.username)
-            .order_by(ExportJob.created_at.desc())
-            .limit(20)
-        )
-        .scalars()
-        .all()
-    )
+    jobs_stmt = select(ExportJob).where(ExportJob.requested_by == current_user.username)
+    if normalized_job_status in {"PENDENTE", "PROCESSANDO", "CONCLUIDO", "ERRO"}:
+        jobs_stmt = jobs_stmt.where(ExportJob.status == normalized_job_status)
+    if normalized_job_backend in {"thread", "rq"}:
+        jobs_stmt = jobs_stmt.where(ExportJob.queue_backend == normalized_job_backend)
+    export_jobs = session.execute(jobs_stmt.order_by(ExportJob.created_at.desc()).limit(20)).scalars().all()
     phone_enrichments = session.execute(select(PhoneEnrichment).order_by(PhoneEnrichment.criado_em.desc()).limit(20)).scalars().all()
     available_sources = [
         value
@@ -2308,12 +1903,14 @@ def exports_page(
             "title": f"Listas {base_segment_label(normalized_segment)}",
             "selected_base_segment": normalized_segment,
             "selected_base_source": normalized_source,
+            "selected_job_status": normalized_job_status,
+            "selected_job_backend": normalized_job_backend,
         },
     )
 
 
-@app.post("/exports")
 def run_export(
+    request: Request,
     base_segment: str = Form("INSS"),
     base_source: str = Form(""),
     year: str = Form(""),
@@ -2384,12 +1981,13 @@ def run_export(
         include_audit=include_audit,
         message="Exportacao colocada em fila.",
         metadata={"segmento": filters.base_segment, "formato": file_format, "auditoria": include_audit},
+        request_id=getattr(request.state, "request_id", request_id_ctx.get("-")),
     )
     return RedirectResponse(url="/exports?message=" + quote_plus("Exportacao colocada em fila. Atualize a pagina para acompanhar."), status_code=303)
 
 
-@app.post("/exports/cpf-enrichment")
 def run_cpf_enrichment_export(
+    request: Request,
     base_segment: str = Form("INSS"),
     year: str = Form(""),
     month: str = Form(""),
@@ -2438,12 +2036,13 @@ def run_cpf_enrichment_export(
         file_format=file_format,
         message="Lista de CPFs colocada em fila.",
         metadata={"segmento": filters.base_segment, "formato": file_format},
+        request_id=getattr(request.state, "request_id", request_id_ctx.get("-")),
     )
     return RedirectResponse(url="/exports?message=" + quote_plus("Lista de CPFs colocada em fila. Atualize a pagina para acompanhar."), status_code=303)
 
 
-@app.post("/exports/updated-base")
 def run_updated_base_export(
+    request: Request,
     base_segment: str = Form("INSS"),
     file_format: str = Form("xlsx"),
     current_user: AppUser = Depends(require_permission("can_export")),
@@ -2458,11 +2057,36 @@ def run_updated_base_export(
         file_format=file_format,
         message="Base atualizada colocada em fila.",
         metadata={"segmento": filters.base_segment, "formato": file_format},
+        request_id=getattr(request.state, "request_id", request_id_ctx.get("-")),
     )
     return RedirectResponse(url="/exports?message=" + quote_plus("Base atualizada colocada em fila. Atualize a pagina para acompanhar."), status_code=303)
 
 
-@app.post("/exports/phone-enrichment-import")
+def run_novavida_wrong_number_export(
+    request: Request,
+    base_segment: str = Form("INSS"),
+    base_source: str = Form(""),
+    file_format: str = Form("xlsx"),
+    current_user: AppUser = Depends(require_permission("can_export")),
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    filters = FilterSet(
+        base_segment=normalize_base_segment(base_segment),
+        base_source=base_source.strip(),
+    )
+    enqueue_export_job(
+        session,
+        current_user.username,
+        "novavida_wrong_number",
+        filters=filters,
+        file_format=file_format,
+        message="Lista Nova Vida (numero errado) colocada em fila.",
+        metadata={"segmento": filters.base_segment, "formato": file_format, "motivo": "nao_e_o_cliente"},
+        request_id=getattr(request.state, "request_id", request_id_ctx.get("-")),
+    )
+    return RedirectResponse(url="/exports?message=" + quote_plus("Lista Nova Vida (numero errado) colocada em fila. Atualize a pagina para acompanhar."), status_code=303)
+
+
 async def run_phone_enrichment_import(
     source_name: str = Form("LEMIT"),
     files: list[UploadFile] = File(default=[]),
@@ -2496,7 +2120,6 @@ async def run_phone_enrichment_import(
     return RedirectResponse(url="/exports?message=" + quote_plus(message), status_code=303)
 
 
-@app.post("/exports/public-update-import")
 async def run_public_update_import(
     base_segment: str = Form("GOVERNO"),
     source_name: str = Form(""),
@@ -2542,7 +2165,6 @@ async def run_public_update_import(
     return RedirectResponse(url=f"/exports?base_segment={normalized_segment}&message=" + quote_plus(message), status_code=303)
 
 
-@app.get("/downloads/{filename}")
 def download_export(filename: str, current_user: AppUser = Depends(require_permission("can_export")), session: Session = Depends(get_session)) -> FileResponse:
     path = settings.exports_dir / filename
     if not path.exists():
@@ -2553,7 +2175,6 @@ def download_export(filename: str, current_user: AppUser = Depends(require_permi
     return FileResponse(path=path, filename=filename, media_type=media_type)
 
 
-@app.get("/history", response_class=HTMLResponse)
 def history_page(
     request: Request,
     message: str = "",
@@ -2589,7 +2210,6 @@ def history_page(
     return render_template(request, "history.html", {"batches": batches, "file_counts": file_counts, "message": message, "title": "Historico", "pagination": pagination})
 
 
-@app.get("/history/{batch_id}", response_class=HTMLResponse)
 def history_batch_detail(
     batch_id: int,
     request: Request,
@@ -2663,7 +2283,6 @@ def history_batch_detail(
     )
 
 
-@app.post("/history/{batch_id}/delete")
 def delete_history_batch(
     batch_id: int,
     current_user: AppUser = Depends(require_permission("can_delete_batches")),
@@ -2683,87 +2302,62 @@ def delete_history_batch(
     return RedirectResponse(url=target, status_code=303)
 
 
-@app.get("/clients/{cpf}/benefits", response_class=HTMLResponse)
-def client_benefit_selector_page(
-    cpf: str,
-    request: Request,
-    current_user: AppUser = Depends(require_permission("can_search")),
+def cancel_history_batch(
+    batch_id: int,
+    current_user: AppUser = Depends(require_permission("can_delete_batches")),
     session: Session = Depends(get_session),
-) -> HTMLResponse:
-    normalized_cpf = "".join(char for char in cpf if char.isdigit())
-    if len(normalized_cpf) != 11:
-        raise HTTPException(status_code=404, detail="Cliente nao encontrado.")
+) -> RedirectResponse:
+    batch = session.get(ImportBatch, batch_id)
+    if batch is None:
+        target = "/history?message=" + quote_plus("Lote nao encontrado.")
+        return RedirectResponse(url=target, status_code=303)
 
-    rows = (
-        session.execute(
-            select(
-                ClientOccurrence.id,
-                ClientOccurrence.nu_nb,
-                ClientOccurrence.esp,
-                ClientOccurrence.ddb,
-                ClientOccurrence.nome,
-                ImportBatch.ano_referencia,
-                ImportBatch.mes_referencia,
-            )
-            .join(SourceFile, SourceFile.id == ClientOccurrence.source_file_id)
-            .join(ImportBatch, ImportBatch.id == SourceFile.batch_id)
-            .where(
-                ClientOccurrence.cpf == normalized_cpf,
-                ClientOccurrence.base_segment == "INSS",
-            )
-            .order_by(
-                ImportBatch.ano_referencia.desc(),
-                ImportBatch.mes_referencia.desc(),
-                SourceFile.id.desc(),
-                ClientOccurrence.id.desc(),
-            )
-        )
-        .all()
-    )
-    if not rows:
-        return RedirectResponse(url=f"/clients/{normalized_cpf}", status_code=303)
+    if batch.status not in {"PENDENTE", "PROCESSANDO"}:
+        target = "/history?message=" + quote_plus(f"Lote {batch_id} nao esta ativo para cancelamento.")
+        return RedirectResponse(url=target, status_code=303)
 
-    unique_benefits: list[dict[str, str]] = []
-    seen_keys: set[tuple[str, str, str, str]] = set()
-    for occurrence_id, nu_nb, esp, ddb, nome, ano_referencia, mes_referencia in rows:
-        benefit = _norm_text(nu_nb)
-        species = _norm_text(esp)
-        ddb_text = _norm_text(ddb)
-        reference = f"{int(mes_referencia):02d}/{int(ano_referencia)}" if mes_referencia and ano_referencia else "-"
-        key = (benefit, species, ddb_text, reference)
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        unique_benefits.append(
-            {
-                "occurrence_id": str(occurrence_id),
-                "benefit": benefit or "Sem numero",
-                "species": species or "-",
-                "species_meaning": get_species_meaning(species),
-                "ddb": ddb_text or "-",
-                "reference": reference,
-                "client_name": _norm_text(nome),
-            }
-        )
+    cancelled = False
+    cancel_error = ""
+    if (batch.queue_backend or "").lower() == "rq" and (batch.queue_job_id or "").strip():
+        try:
+            cancelled = cancel_rq_job(batch.queue_job_id.strip())
+        except Exception as exc:
+            cancel_error = str(exc)
 
-    return render_template(
-        request,
-        "client_benefit_selector.html",
-        {
-            "title": "Selecionar beneficio",
-            "cpf": normalized_cpf,
-            "benefits": unique_benefits,
-            "client_name": unique_benefits[0]["client_name"] if unique_benefits else "",
+    batch.status = "CANCELADO"
+    previous_summary = (batch.resumo or "").strip()
+    reason = "Cancelado manualmente pelo painel."
+    if cancel_error:
+        reason = f"{reason} Falha ao enviar comando de cancelamento da fila: {cancel_error}"
+    elif not cancelled and (batch.queue_backend or "").lower() == "rq":
+        reason = f"{reason} Job de fila nao estava mais cancelavel (id={batch.queue_job_id})."
+    batch.resumo = f"{previous_summary} | {reason}".strip(" |")
+    session.commit()
+
+    log_audit(
+        session,
+        current_user.username,
+        "import_batch_cancelled",
+        target_type="batch",
+        target_id=str(batch_id),
+        message="Cancelamento solicitado pelo painel.",
+        metadata={
+            "queue_backend": batch.queue_backend,
+            "queue_name": batch.queue_name,
+            "queue_job_id": batch.queue_job_id,
+            "cancelled_in_queue": cancelled,
+            "cancel_error": cancel_error,
         },
     )
+    session.commit()
+
+    message = f"Lote {batch_id} cancelado pelo painel."
+    return RedirectResponse(url="/history?message=" + quote_plus(message), status_code=303)
 
 
-@app.get("/clients/{cpf}", response_class=HTMLResponse)
 def client_detail_page(
     cpf: str,
     request: Request,
-    selected_benefit: str = "",
-    selected_occurrence_id: str = "",
     current_user: AppUser = Depends(require_permission("can_search")),
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
@@ -2790,29 +2384,6 @@ def client_detail_page(
     )
     if client is None and not occurrences:
         raise HTTPException(status_code=404, detail="Cliente nao encontrado.")
-
-    preferred_occurrence_id = _norm_text(selected_occurrence_id)
-    preferred_benefit = _norm_text(selected_benefit)
-    if preferred_occurrence_id and occurrences:
-        occurrences = sorted(
-            occurrences,
-            key=lambda item: (
-                0 if str(item[0].id) == preferred_occurrence_id else 1,
-                -int(item[3] or 0),
-                -int(item[4] or 0),
-                -int(item[0].id or 0),
-            ),
-        )
-    elif preferred_benefit and occurrences:
-        occurrences = sorted(
-            occurrences,
-            key=lambda item: (
-                0 if _norm_text(item[0].nu_nb) == preferred_benefit else 1,
-                -int(item[3] or 0),
-                -int(item[4] or 0),
-                -int(item[0].id or 0),
-            ),
-        )
 
     latest_occurrence = occurrences[0][0] if occurrences else None
     if client is None and latest_occurrence is not None:
@@ -2885,6 +2456,9 @@ def client_detail_page(
             "regional_alert": _first_extra_value(extras, "ALERTA_REGIONAL"),
             "ddd_phone": _first_extra_value(extras, "DDD_TELEFONE"),
             "ddd_uf": _first_extra_value(extras, "DDD_UF_BRASILAPI"),
+            "numero_cliente": _first_extra_value(extras, "N DO CLIENTE", "Nº DO CLIENTE", "NRO CLIENTE", "NUMERO CLIENTE"),
+            "conta_contrato": _first_extra_value(extras, "CONTA CONTRATO", "CONTA_CONTRATO"),
+            "numero_instalacao": _first_extra_value(extras, "NUMERO INSTALACAO", "NUMERO INSTALAÇÃO", "N INSTALACAO", "Nº INSTALACAO"),
         }
 
     public_matricula_details: list[dict[str, object]] = []
@@ -2935,7 +2509,7 @@ def client_detail_page(
                 "margem_bruta": occurrence.margem_bruta if occurrence is not None else None,
                 "margem_utilizada": occurrence.margem_utilizada if occurrence is not None else None,
                 "tipo_vinculo": _first_extra_value(extras, "REGIME_CONTRATACAO", "TIPO DE VINCULO", "TIPO_VINCULO", "VINCULO", "REGIME DE CONTRATACAO"),
-                "cargo_funcao": _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÇÃO", "FUNÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O", "CARGO/FUNCAO", "CARGO FUNCAO", "CBO TITULO", "CBO_TITULO") or (occurrence.cbo_titulo if occurrence is not None else ""),
+                "cargo_funcao": _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÃ‡ÃƒO", "FUNÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢O", "CARGO/FUNCAO", "CARGO FUNCAO", "CBO TITULO", "CBO_TITULO") or (occurrence.cbo_titulo if occurrence is not None else ""),
                 "phone": (occurrence.telefone1 or occurrence.telefone2 or occurrence.telefone3) if occurrence is not None else "",
                 "email": occurrence.email if occurrence is not None else "",
                 "city": occurrence.cidade if occurrence is not None else client.cidade_atual,
@@ -2974,7 +2548,7 @@ def client_detail_page(
                 "margem_bruta": occurrence.margem_bruta,
                 "margem_utilizada": occurrence.margem_utilizada,
                 "tipo_vinculo": _first_extra_value(extras, "REGIME_CONTRATACAO", "TIPO DE VINCULO", "TIPO_VINCULO", "VINCULO", "REGIME DE CONTRATACAO"),
-                "cargo_funcao": _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÇÃO", "FUNÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O", "CARGO/FUNCAO", "CARGO FUNCAO", "CBO TITULO", "CBO_TITULO") or occurrence.cbo_titulo,
+                "cargo_funcao": _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÃ‡ÃƒO", "FUNÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢O", "CARGO/FUNCAO", "CARGO FUNCAO", "CBO TITULO", "CBO_TITULO") or occurrence.cbo_titulo,
                 "phone": occurrence.telefone1 or occurrence.telefone2 or occurrence.telefone3 or "",
                 "email": occurrence.email or "",
                 "city": occurrence.cidade or client.cidade_atual,
@@ -3006,13 +2580,12 @@ def client_detail_page(
             "client": client,
             "latest_occurrence": latest_occurrence,
             "occurrences": occurrences,
-            "segment_details": [segment_details[key] for key in ["INSS", "GOVERNO", "PREFEITURA"] if key in segment_details],
+            "segment_details": [segment_details[key] for key in ["INSS", "CREFAZ", "GOVERNO", "PREFEITURA"] if key in segment_details],
             "public_matricula_details": public_matricula_details,
         },
     )
 
 
-@app.post("/clients/favorites")
 def save_client_filter(
     name: str = Form(...),
     query_string: str = Form(""),
@@ -3028,37 +2601,6 @@ def save_client_filter(
     return RedirectResponse(url="/clients?message=" + quote_plus("Filtro favorito salvo."), status_code=303)
 
 
-@app.post("/clients/{cpf}/do-not-call")
-def set_client_do_not_call(
-    cpf: str,
-    enabled: bool = Form(False),
-    return_url: str = Form("/clients"),
-    current_user: AppUser = Depends(require_permission("can_search")),
-    session: Session = Depends(get_session),
-) -> RedirectResponse:
-    normalized_cpf = normalize_cpf(cpf)
-    client = session.get(Client, normalized_cpf)
-    if client is None:
-        return RedirectResponse(url="/clients?error=" + quote_plus("Cliente nao encontrado para marcar bloqueio de ligacao."), status_code=303)
-    client.do_not_call = bool(enabled)
-    action = "do_not_call_enabled" if client.do_not_call else "do_not_call_disabled"
-    message = "Cliente marcado como NAO LIGAR." if client.do_not_call else "Cliente removido da lista NAO LIGAR."
-    log_audit(
-        session,
-        current_user.username,
-        action,
-        target_type="client",
-        target_id=normalized_cpf,
-        message=message,
-        metadata={"cpf": normalized_cpf, "enabled": client.do_not_call},
-    )
-    session.commit()
-    target_url = safe_next_path(return_url, "/clients")
-    separator = "&" if "?" in target_url else "?"
-    return RedirectResponse(url=f"{target_url}{separator}message=" + quote_plus(message), status_code=303)
-
-
-@app.post("/clients/favorites/{favorite_id}/delete")
 def delete_client_filter(
     favorite_id: int,
     current_user: AppUser = Depends(require_permission("can_search")),
@@ -3074,7 +2616,52 @@ def delete_client_filter(
     return RedirectResponse(url="/clients?message=" + quote_plus("Filtro favorito removido."), status_code=303)
 
 
-@app.get("/users", response_class=HTMLResponse)
+def set_client_do_not_call(
+    cpf: str,
+    enabled: bool = Form(False),
+    dnc_reason: str = Form(""),
+    return_url: str = Form("/clients"),
+    current_user: AppUser = Depends(require_permission("can_search")),
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    allowed_dnc_reasons = {
+        "nao_e_o_cliente": "Nao e o cliente",
+        "cliente_ja_fechou_conosco": "Cliente ja fechou conosco",
+        "nao_quer_mais_receber_ligacao": "Nao quer mais receber ligacao",
+    }
+    normalized_cpf = normalize_cpf(cpf)
+    normalized_reason = (dnc_reason or "").strip()
+    if enabled and normalized_reason not in allowed_dnc_reasons:
+        return RedirectResponse(url="/clients?error=" + quote_plus("Selecione um motivo para marcar NAO LIGAR."), status_code=303)
+    client = session.get(Client, normalized_cpf)
+    if client is None:
+        rebuild_clients_for_cpfs(session, {normalized_cpf})
+        session.commit()
+        client = session.get(Client, normalized_cpf)
+    if client is None:
+        return RedirectResponse(url="/clients?error=" + quote_plus("Cliente nao encontrado para marcar bloqueio de ligacao."), status_code=303)
+    client.do_not_call = bool(enabled)
+    client.do_not_call_reason = normalized_reason if client.do_not_call else ""
+    action = "do_not_call_enabled" if client.do_not_call else "do_not_call_disabled"
+    if client.do_not_call:
+        message = f"Cliente marcado como NAO LIGAR. Motivo: {allowed_dnc_reasons[client.do_not_call_reason]}."
+    else:
+        message = "Cliente removido da lista NAO LIGAR."
+    log_audit(
+        session,
+        current_user.username,
+        action,
+        target_type="client",
+        target_id=normalized_cpf,
+        message=message,
+        metadata={"cpf": normalized_cpf, "enabled": client.do_not_call, "reason_key": client.do_not_call_reason, "reason_label": allowed_dnc_reasons.get(client.do_not_call_reason, "")},
+    )
+    session.commit()
+    target_url = safe_next_path(return_url, "/clients")
+    separator = "&" if "?" in target_url else "?"
+    return RedirectResponse(url=f"{target_url}{separator}message=" + quote_plus(message), status_code=303)
+
+
 def users_page(
     request: Request,
     current_user: AppUser = Depends(require_permission("can_manage_users")),
@@ -3097,7 +2684,6 @@ def users_page(
     )
 
 
-@app.post("/users")
 def create_user(
     username: str = Form(...),
     full_name: str = Form(""),
@@ -3107,6 +2693,7 @@ def create_user(
     can_view_dashboard: bool = Form(False),
     can_import: bool = Form(False),
     can_search: bool = Form(False),
+    can_access_consignado_inss: bool = Form(False),
     can_export: bool = Form(False),
     can_view_history: bool = Form(False),
     can_delete_batches: bool = Form(False),
@@ -3131,6 +2718,7 @@ def create_user(
         can_view_dashboard=can_view_dashboard,
         can_import=can_import,
         can_search=can_search,
+        can_access_consignado_inss=can_access_consignado_inss,
         can_export=can_export,
         can_view_history=can_view_history,
         can_delete_batches=can_delete_batches,
@@ -3142,7 +2730,6 @@ def create_user(
     return RedirectResponse(url="/users?message=" + quote_plus("Usuario criado com sucesso."), status_code=303)
 
 
-@app.post("/users/{user_id}")
 def update_user(
     user_id: int,
     username: str = Form(...),
@@ -3153,6 +2740,7 @@ def update_user(
     can_view_dashboard: bool = Form(False),
     can_import: bool = Form(False),
     can_search: bool = Form(False),
+    can_access_consignado_inss: bool = Form(False),
     can_export: bool = Form(False),
     can_view_history: bool = Form(False),
     can_delete_batches: bool = Form(False),
@@ -3176,6 +2764,7 @@ def update_user(
     user.can_view_dashboard = can_view_dashboard
     user.can_import = can_import
     user.can_search = can_search
+    user.can_access_consignado_inss = can_access_consignado_inss
     user.can_export = can_export
     user.can_view_history = can_view_history
     user.can_delete_batches = can_delete_batches
@@ -3190,7 +2779,6 @@ def update_user(
     return RedirectResponse(url="/users?message=" + quote_plus("Usuario atualizado com sucesso."), status_code=303)
 
 
-@app.post("/users/{user_id}/reset-password")
 def reset_user_password(
     user_id: int,
     new_password: str = Form(...),
@@ -3211,7 +2799,6 @@ def reset_user_password(
     return RedirectResponse(url="/users?message=" + quote_plus(f"Senha redefinida para {user.username}."), status_code=303)
 
 
-@app.post("/users/{user_id}/lock")
 def lock_user_temporarily(
     user_id: int,
     minutes: int = Form(60),
@@ -3238,24 +2825,67 @@ def lock_user_temporarily(
     return RedirectResponse(url="/users?message=" + quote_plus(message), status_code=303)
 
 
-@app.get("/health")
-def healthcheck(session: Session = Depends(get_session)) -> JSONResponse:
-    db_ok = False
+def healthcheck() -> JSONResponse:
+    payload = {"status": "ok", "kind": "liveness"}
+    return JSONResponse(payload, status_code=200)
+
+
+def readiness_check(session: Session = Depends(get_session)) -> JSONResponse:
+    checks: dict[str, object] = {
+        "database": "ok",
+        "directories": {},
+        "queue": {},
+    }
+    errors: list[str] = []
+
     try:
-        db_ok = bool(session.scalar(select(1)))
-    except Exception:
-        db_ok = False
-    payload = {"status": "ok" if db_ok else "degraded", "database": "ok" if db_ok else "error"}
-    return JSONResponse(payload, status_code=200 if db_ok else 503)
+        session.scalar(select(1))
+    except Exception as exc:
+        checks["database"] = "error"
+        errors.append(f"database: {exc}")
+
+    directory_map = {
+        "uploads": settings.uploads_dir,
+        "archive": settings.archive_dir,
+        "exports": settings.exports_dir,
+    }
+    directory_checks: dict[str, str] = {}
+    for label, path in directory_map.items():
+        status = "ok" if path.exists() and path.is_dir() else "error"
+        directory_checks[label] = status
+        if status != "ok":
+            errors.append(f"directory_{label}: path '{path}' nao existe ou nao e pasta")
+    checks["directories"] = directory_checks
+
+    queue_backend = getattr(settings, "queue_backend", "thread")
+    queue_checks: dict[str, object] = {
+        "backend": queue_backend,
+        "status": "ok",
+    }
+    if queue_backend == "rq":
+        try:
+            from redis import Redis
+
+            redis_url = getattr(settings, "queue_redis_url", "redis://localhost:6379/0")
+            redis_conn = Redis.from_url(redis_url)
+            redis_conn.ping()
+            queue_checks["redis"] = "ok"
+        except Exception as exc:
+            queue_checks["status"] = "error"
+            queue_checks["redis"] = "error"
+            errors.append(f"queue_redis: {exc}")
+    checks["queue"] = queue_checks
+
+    if errors:
+        payload = {"status": "degraded", "kind": "readiness", "checks": checks, "errors": errors}
+        return JSONResponse(payload, status_code=503)
+
+    payload = {"status": "ok", "kind": "readiness", "checks": checks}
+    return JSONResponse(payload, status_code=200)
 
 
-@app.get("/metrics")
-def metrics_endpoint(session: Session = Depends(get_session)) -> PlainTextResponse:
-    return PlainTextResponse(metrics.render_prometheus(session), media_type="text/plain; version=0.0.4")
-
-
-@app.get("/api/c6/worker-loan/health")
-def c6_worker_health(_current_user: AppUser = Depends(require_permission("can_search"))) -> JSONResponse:
+def c6_worker_health(current_user: AppUser = Depends(require_permission("can_access_consignado_inss"))) -> JSONResponse:
+    _ = current_user
     payload = {
         "enabled": settings.c6_worker_enabled,
         "base_url": settings.c6_base_url,
@@ -3264,11 +2894,10 @@ def c6_worker_health(_current_user: AppUser = Depends(require_permission("can_se
     return JSONResponse(payload, status_code=200)
 
 
-@app.post("/api/c6/worker-loan/offer")
 def c6_generate_worker_offer(
     request: Request,
     body: dict[str, object] = Body(...),
-    current_user: AppUser = Depends(require_permission("can_search")),
+    current_user: AppUser = Depends(require_permission("can_access_consignado_inss")),
     session: Session = Depends(get_session),
 ) -> JSONResponse:
     try:
@@ -3288,12 +2917,11 @@ def c6_generate_worker_offer(
     return JSONResponse({"status_code": response.status_code, "data": response.payload}, status_code=200)
 
 
-@app.post("/api/c6/worker-loan/simulation")
 def c6_simulate_worker_loan(
     request: Request,
     body: dict[str, object] = Body(...),
     version: str = "v2",
-    current_user: AppUser = Depends(require_permission("can_search")),
+    current_user: AppUser = Depends(require_permission("can_access_consignado_inss")),
     session: Session = Depends(get_session),
 ) -> JSONResponse:
     try:
@@ -3313,11 +2941,10 @@ def c6_simulate_worker_loan(
     return JSONResponse({"status_code": response.status_code, "data": response.payload}, status_code=200)
 
 
-@app.post("/api/c6/worker-loan/include")
 def c6_include_worker_loan(
     request: Request,
     body: dict[str, object] = Body(...),
-    current_user: AppUser = Depends(require_permission("can_search")),
+    current_user: AppUser = Depends(require_permission("can_access_consignado_inss")),
     session: Session = Depends(get_session),
 ) -> JSONResponse:
     try:
@@ -3337,49 +2964,25 @@ def c6_include_worker_loan(
     return JSONResponse({"status_code": response.status_code, "data": response.payload}, status_code=200)
 
 
-@app.post("/api/c6/worker-loan/authorization/generate-liveness")
-def c6_generate_worker_authorization_liveness(
-    request: Request,
-    body: dict[str, object] = Body(...),
-    current_user: AppUser = Depends(require_permission("can_search")),
-    session: Session = Depends(get_session),
-) -> JSONResponse:
-    try:
-        response = c6_worker_loan_client.generate_authorization_liveness(body)
-    except C6WorkerLoanError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+from .routes.auth import router as auth_router
+from .routes.clients import router as clients_router
+from .routes.imports import router as imports_router
+from .routes.exports import router as exports_router
+from .routes.history import router as history_router
+from .routes.users import router as users_router
+from .routes.system import router as system_router
 
-    log_audit(
-        session,
-        current_user.username,
-        "c6_worker_authorization_link_generated",
-        target_type="integration",
-        message="Link de autorizacao do consignado trabalhador solicitado.",
-        metadata={"path": str(request.url.path)},
-    )
-    session.commit()
-    return JSONResponse({"status_code": response.status_code, "data": response.payload}, status_code=200)
+app.include_router(auth_router)
+app.include_router(clients_router)
+app.include_router(imports_router)
+app.include_router(exports_router)
+app.include_router(history_router)
+app.include_router(users_router)
+app.include_router(system_router)
 
 
-@app.post("/api/c6/worker-loan/authorization/status")
-def c6_worker_authorization_status(
-    request: Request,
-    body: dict[str, object] = Body(...),
-    current_user: AppUser = Depends(require_permission("can_search")),
-    session: Session = Depends(get_session),
-) -> JSONResponse:
-    try:
-        response = c6_worker_loan_client.authorization_status(body)
-    except C6WorkerLoanError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    log_audit(
-        session,
-        current_user.username,
-        "c6_worker_authorization_status_checked",
-        target_type="integration",
-        message="Status da autorizacao do consignado trabalhador consultado.",
-        metadata={"path": str(request.url.path)},
-    )
-    session.commit()
-    return JSONResponse({"status_code": response.status_code, "data": response.payload}, status_code=200)
+
+
+
+

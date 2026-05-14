@@ -1,5 +1,19 @@
 {% extends "base.html" %}
 {% block content %}
+{% set total_clients = total_clients|default(0, true) %}
+{% set actionable_ratio = actionable_ratio|default(0, true) %}
+{% set total_actionable = total_actionable|default(0, true) %}
+{% set latest_batch_label = latest_batch_label|default("-", true) %}
+{% set completed_batches = completed_batches|default(0, true) %}
+{% set total_batches = total_batches|default(0, true) %}
+{% set duplicate_records = duplicate_records|default(0, true) %}
+{% set duplicate_ratio = duplicate_ratio|default(0, true) %}
+{% set total_do_not_call = total_do_not_call|default(0, true) %}
+{% set do_not_call_ratio = do_not_call_ratio|default(0, true) %}
+{% set total_with_phone = total_with_phone|default(0, true) %}
+{% set total_without_phone = total_without_phone|default(0, true) %}
+{% set segment_stats = segment_stats|default([], true) %}
+{% set latest_audits = latest_audits|default([], true) %}
 <section class="dashboard-home">
     <div class="dashboard-hero card">
         <div class="dashboard-hero-main">
@@ -16,9 +30,9 @@
                     <small>Base consolidada pronta para segmentacao</small>
                 </div>
                 <div class="dashboard-summary-card">
-                    <span>Cobertura telefonica</span>
-                    <strong>{{ "{:.1f}".format(phone_ratio).replace(".", ",") }}%</strong>
-                    <small>{{ "{:,}".format(total_with_phone).replace(",", ".") }} com telefone valido</small>
+                    <span>Taxa acionavel real</span>
+                    <strong>{{ "{:.1f}".format((actionable_ratio|default(0, true))|float).replace(".", ",") }}%</strong>
+                    <small>{{ "{:,}".format(total_actionable).replace(",", ".") }} com telefone e sem bloqueio</small>
                 </div>
                 <div class="dashboard-summary-card">
                     <span>Ultima importacao</span>
@@ -37,19 +51,19 @@
         <small>{{ completed_batches }} concluidas</small>
     </article>
     <article class="card dashboard-kpi-card">
-        <span class="dashboard-card-kicker">Arquivos</span>
-        <strong>{{ total_files }}</strong>
-        <small>{{ "{:.1f}".format(file_per_campaign).replace(".", ",") }} por campanha</small>
+        <span class="dashboard-card-kicker">Acionavel real</span>
+        <strong>{{ "{:,}".format(total_actionable).replace(",", ".") }}</strong>
+        <small>{{ "{:.1f}".format((actionable_ratio|default(0, true))|float).replace(".", ",") }}% da base pronta para contato</small>
     </article>
     <article class="card dashboard-kpi-card">
-        <span class="dashboard-card-kicker">Registros</span>
-        <strong>{{ "{:,}".format(total_occurrences).replace(",", ".") }}</strong>
-        <small>{{ "{:,}".format(avg_records_per_file).replace(",", ".") }} por arquivo</small>
+        <span class="dashboard-card-kicker">Duplicidade</span>
+        <strong>{{ "{:,}".format(duplicate_records).replace(",", ".") }}</strong>
+        <small>{{ "{:.1f}".format((duplicate_ratio|default(0, true))|float).replace(".", ",") }}% dos registros sao repetidos</small>
     </article>
     <article class="card dashboard-kpi-card">
-        <span class="dashboard-card-kicker">Exportacoes</span>
-        <strong>{{ latest_exports | length }}</strong>
-        <small>Ultima em {{ latest_export_label }}</small>
+        <span class="dashboard-card-kicker">Bloqueio de contato</span>
+        <strong>{{ "{:,}".format(total_do_not_call).replace(",", ".") }}</strong>
+        <small>{{ "{:.1f}".format((do_not_call_ratio|default(0, true))|float).replace(".", ",") }}% marcados como nao ligar</small>
     </article>
 </section>
 
@@ -103,37 +117,37 @@
         <div class="dashboard-card-head">
             <div>
                 <span class="dashboard-card-kicker">Qualidade</span>
-                <h2>Capacidade de contato da base</h2>
+                <h2>Capacidade acionavel da base</h2>
             </div>
-            <strong class="dashboard-side-value">{{ "{:.1f}".format(phone_ratio).replace(".", ",") }}%</strong>
+            <strong class="dashboard-side-value">{{ "{:.1f}".format((actionable_ratio|default(0, true))|float).replace(".", ",") }}%</strong>
         </div>
         <div class="dashboard-contact-grid">
             <div class="dashboard-contact-card is-positive">
-                <span>Com telefone</span>
-                <strong>{{ "{:,}".format(total_with_phone).replace(",", ".") }}</strong>
+                <span>Acionavel real</span>
+                <strong>{{ "{:,}".format(total_actionable).replace(",", ".") }}</strong>
             </div>
             <div class="dashboard-contact-card">
-                <span>Sem telefone</span>
-                <strong>{{ "{:,}".format(total_without_phone).replace(",", ".") }}</strong>
+                <span>Com telefone</span>
+                <strong>{{ "{:,}".format(total_with_phone).replace(",", ".") }}</strong>
             </div>
         </div>
         <div class="progress-stack dashboard-progress-stack">
             <div class="dashboard-progress-block">
                 <div class="legend-row">
                     <span>Base acionavel</span>
-                    <strong>{{ "{:.1f}".format(phone_ratio).replace(".", ",") }}%</strong>
+                    <strong>{{ "{:.1f}".format((actionable_ratio|default(0, true))|float).replace(".", ",") }}%</strong>
                 </div>
                 <div class="progress-bar">
-                    <span class="fill green" style="width: {{ phone_ratio }}%"></span>
+                    <span class="fill green" style="width: {{ (actionable_ratio|default(0, true))|float }}%"></span>
                 </div>
             </div>
             <div class="dashboard-progress-block">
                 <div class="legend-row">
-                    <span>Base sem telefone</span>
-                    <strong>{{ "{:.1f}".format(no_phone_ratio).replace(".", ",") }}%</strong>
+                    <span>Bloqueados para contato</span>
+                    <strong>{{ "{:.1f}".format((do_not_call_ratio|default(0, true))|float).replace(".", ",") }}%</strong>
                 </div>
                 <div class="progress-bar muted-bar">
-                    <span class="fill orange" style="width: {{ no_phone_ratio }}%"></span>
+                    <span class="fill orange" style="width: {{ do_not_call_ratio }}%"></span>
                 </div>
             </div>
         </div>
@@ -163,16 +177,16 @@
                 </strong>
             </div>
             <div class="dashboard-insight-item">
-                <span>Media por campanha</span>
-                <strong>{{ "{:,}".format(avg_clients_per_campaign).replace(",", ".") }} clientes consolidados</strong>
+                <span>Freshness 30 dias</span>
+                <strong>{{ "{:,}".format(fresh_30).replace(",", ".") }} CPFs recentes ({{ "{:.1f}".format((fresh_30_ratio|default(0, true))|float).replace(".", ",") }}%)</strong>
             </div>
             <div class="dashboard-insight-item">
-                <span>Ultima exportacao</span>
-                <strong>{{ latest_export_label }}</strong>
+                <span>Freshness 90 dias</span>
+                <strong>{{ "{:,}".format(fresh_90).replace(",", ".") }} CPFs recentes ({{ "{:.1f}".format((fresh_90_ratio|default(0, true))|float).replace(".", ",") }}%)</strong>
             </div>
             <div class="dashboard-insight-item">
-                <span>Estrutura da operacao</span>
-                <strong>Importacao, consulta, segmentacao e geracao de listas em uma base unica</strong>
+                <span>Tempo medio importacao para exportacao</span>
+                <strong>{{ "{:.1f}".format((avg_export_hours_from_import|default(0, true))|float).replace(".", ",") }} horas</strong>
             </div>
         </div>
     </article>
@@ -182,20 +196,20 @@
     <article class="dashboard-metric-card card">
         <div class="dashboard-card-head">
             <div>
-                <span class="dashboard-card-kicker">Distribuicao</span>
-                <h2>Base por UF</h2>
+                <span class="dashboard-card-kicker">Distribuicao acionavel</span>
+                <h2>Top UFs por potencial de contato</h2>
             </div>
-            <strong class="dashboard-side-value">{{ states_chart | length }}</strong>
+            <strong class="dashboard-side-value">{{ actionable_states_chart | length }}</strong>
         </div>
         <div class="mini-chart dashboard-state-chart">
-            {% for item in states_chart %}
+            {% for item in actionable_states_chart %}
             <div class="mini-bar-row dashboard-state-row">
                 <span class="dashboard-state-label">{{ item.uf }}</span>
                 <div class="mini-bar"><span style="width: {{ item.pct }}%"></span></div>
                 <strong>{{ "{:,}".format(item.count).replace(",", ".") }}</strong>
             </div>
             {% else %}
-            <p>Nenhum dado de UF importado ainda.</p>
+            <p>Nenhum dado acionavel por UF ainda.</p>
             {% endfor %}
         </div>
     </article>

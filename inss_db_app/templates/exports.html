@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
 {% if message %}
 <p class="success">{{ message }}</p>
@@ -383,6 +383,7 @@
             <button type="submit" class="primary-wide campaign-submit">Gerar campanha na fila</button>
             <button type="submit" class="primary-wide campaign-submit" formaction="/exports/updated-base">Gerar base atualizada na fila</button>
             <button type="submit" class="secondary-wide campaign-submit" formaction="/exports/cpf-enrichment">Gerar lista de CPFs na fila</button>
+            <button type="submit" class="secondary-wide campaign-submit" formaction="/exports/novavida-wrong-number">Gerar lista Numero errado</button>
         </div>
     </aside>
 </form>
@@ -394,9 +395,32 @@
             <p>Todas as exportacoes entram na fila e liberam download quando o status virar concluido.</p>
         </div>
     </div>
+    <form method="get" class="campaign-grid three" style="margin-bottom: 12px;">
+        <input type="hidden" name="base_segment" value="{{ selected_base_segment or 'INSS' }}">
+        <input type="hidden" name="base_source" value="{{ selected_base_source or '' }}">
+        <label class="campaign-field">Status
+            <select name="job_status">
+                <option value="" {% if not selected_job_status %}selected{% endif %}>Todos</option>
+                <option value="PENDENTE" {% if selected_job_status == "PENDENTE" %}selected{% endif %}>Pendente</option>
+                <option value="PROCESSANDO" {% if selected_job_status == "PROCESSANDO" %}selected{% endif %}>Processando</option>
+                <option value="CONCLUIDO" {% if selected_job_status == "CONCLUIDO" %}selected{% endif %}>Concluido</option>
+                <option value="ERRO" {% if selected_job_status == "ERRO" %}selected{% endif %}>Erro</option>
+            </select>
+        </label>
+        <label class="campaign-field">Backend
+            <select name="job_backend">
+                <option value="" {% if not selected_job_backend %}selected{% endif %}>Todos</option>
+                <option value="thread" {% if selected_job_backend == "thread" %}selected{% endif %}>thread</option>
+                <option value="rq" {% if selected_job_backend == "rq" %}selected{% endif %}>rq</option>
+            </select>
+        </label>
+        <div class="campaign-side-actions">
+            <button type="submit" class="secondary-wide">Filtrar fila</button>
+        </div>
+    </form>
     <div class="table-scroll-shell">
     <table>
-        <thead><tr><th>Data</th><th>Status</th><th>Tipo</th><th>Registros</th><th>Arquivo</th><th>Erro</th></tr></thead>
+        <thead><tr><th>Data</th><th>Status</th><th>Tipo</th><th>Backend</th><th>Queue Job ID</th><th>Registros</th><th>Arquivo</th><th>Erro</th></tr></thead>
         <tbody>
         {% for job in export_jobs %}
             <tr>
@@ -405,10 +429,13 @@
                 <td>
                     {% if job.job_type == "campaign" %}Campanha
                     {% elif job.job_type == "cpf_enrichment" %}Lista de CPFs
+                    {% elif job.job_type == "novavida_wrong_number" %}Nova Vida - numero errado
                     {% elif job.job_type == "updated_base" %}Base atualizada
                     {% else %}{{ job.job_type }}
                     {% endif %}
                 </td>
+                <td>{{ job.queue_backend or "-" }}</td>
+                <td>{{ job.queue_job_id or "-" }}</td>
                 <td>{{ job.total_records }}</td>
                 <td>
                     {% if job.output_file %}
@@ -418,10 +445,25 @@
                         -
                     {% endif %}
                 </td>
-                <td>{{ job.error_message or '-' }}</td>
+                <td>
+                    {% if job.error_message %}
+                        {% set short_error = job.error_message[:160] %}
+                        <div class="export-error-inline" title="{{ job.error_message }}">
+                            {{ short_error }}{% if job.error_message|length > 160 %}...{% endif %}
+                        </div>
+                        {% if job.error_message|length > 160 %}
+                        <details class="export-error-details">
+                            <summary>Ver detalhes</summary>
+                            <pre>{{ job.error_message }}</pre>
+                        </details>
+                        {% endif %}
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
             </tr>
         {% else %}
-            <tr><td colspan="6">Nenhuma exportacao em fila ainda.</td></tr>
+            <tr><td colspan="8">Nenhuma exportacao em fila ainda.</td></tr>
         {% endfor %}
         </tbody>
     </table>
@@ -572,3 +614,4 @@ document.addEventListener("DOMContentLoaded", function () {
 </script>
 {% endif %}
 {% endblock %}
+

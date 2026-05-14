@@ -5,7 +5,7 @@
     <h2>Inclusao Proposta INSS - C6</h2>
     <p>Preencha os dados bancarios e conclua a inclusao da proposta.</p>
     {% if error %}
-    <p class="clt-alert"><strong>{{ error }}</strong></p>
+    <p class="clt-alert clt-alert-compact" title="{{ error }}"><strong>{{ error }}</strong></p>
     {% endif %}
 </section>
 
@@ -126,9 +126,9 @@
         <div><span>Status</span><strong>{{ "SUCESSO" if result.status_code == 200 else "ERRO" }}</strong></div>
         <div><span>Acao</span><strong>INCLUSAO</strong></div>
     </div>
-    <details class="c6-debug-box" open>
+    <details class="c6-debug-box">
         <summary>Ver retorno tecnico</summary>
-        <pre>{{ result | tojson(indent=2) }}</pre>
+        <pre class="c6-debug-pre">{{ result | tojson(indent=2) }}</pre>
     </details>
 </section>
 {% endif %}

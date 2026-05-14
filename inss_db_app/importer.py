@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import csv
 import hashlib
@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -16,11 +17,12 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from sqlalchemy import Select, and_, delete, func, insert, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .address_lookup import lookup_brasilapi_ddd, lookup_cep_address
 from .config import settings
-from .database import serialized_write
+from .database import SessionLocal, serialized_write
 from .models import Client, ClientOccurrence, EnrichmentImportItem, ExportHistory, ImportBatch, PhoneEnrichment, PublicCampaignUpdate, SourceFile
 from .schemas import ImportRequest, ImportSummary
 
@@ -58,6 +60,7 @@ PUBLIC_EXPORT_HEADERS = [
     "CIDADE",
 ]
 ENRICHMENT_CPF_HEADERS = ["CPF", "NOME"]
+WRONG_NUMBER_EXPORT_HEADERS = ["CPF", "NOME", "TELEFONE", "MOTIVO"]
 AUDIT_HEADERS = EXPORT_HEADERS + ["ARQUIVO_ORIGEM", "SEMANA", "ANO", "MES", "TELEFONE2", "TELEFONE3", "EMAIL"]
 PUBLIC_AUDIT_HEADERS = PUBLIC_EXPORT_HEADERS + ["ARQUIVO_ORIGEM", "SEMANA", "ANO", "MES", "TELEFONE2", "TELEFONE3", "EMAIL", "FONTE"]
 UPDATED_BASE_HEADERS = [
@@ -133,7 +136,7 @@ HEADER_ALIASES = {
         "NOME_X",
     },
     "NOME_HIGIENIZADO": {"NOME HIGIENIZADO"},
-    "MATRICULA": {"MATRICULA", "MATRÍCULA"},
+    "MATRICULA": {"MATRICULA", "MATRÃCULA"},
     "NU-NB": {
         "NU NB",
         "NU-NB",
@@ -181,18 +184,18 @@ HEADER_ALIASES = {
     },
     "UF": {"UF", "ESTADO"},
     "PIS": {"PIS", "PIS/PASEP"},
-    "ENTIDADE": {"ENTIDADE", "ESTADO_ENTIDADE", "ORGAO", "ORGÃO"},
+    "ENTIDADE": {"ENTIDADE", "ESTADO_ENTIDADE", "ORGAO", "ORGÃƒO"},
     "SECRETARIA": {"SECRETARIA"},
-    "CONVENIO": {"CONVENIO", "CONVENIO ", "CONVÊNIO"},
-    "REGIME_CONTRATACAO": {"REGIME DE CONTRATACAO", "REGIME DE CONTRATAÇÃO", "GRUPO"},
-    "SALARIO": {"SALARIO", "RENDA", "REMUNERACAO DO MES", "REMUNERAÇÃO DO MÊS"},
+    "CONVENIO": {"CONVENIO", "CONVENIO ", "CONVÃŠNIO"},
+    "REGIME_CONTRATACAO": {"REGIME DE CONTRATACAO", "REGIME DE CONTRATAÃ‡ÃƒO", "GRUPO"},
+    "SALARIO": {"SALARIO", "RENDA", "REMUNERACAO DO MES", "REMUNERAÃ‡ÃƒO DO MÃŠS"},
     "MARGEM_LIQUIDA": {"MARGEM LIQUIDA", " MARGEM LIQUIDA "},
     "MARGEM_BRUTA": {"MARGEM BRUTA", " MARGEM BRUTA "},
     "MARGEM_UTILIZADA": {"MARGEM UTILIZADA"},
     "CIDADE": {"CIDADE", "MUNICIPIO"},
     "BAIRRO": {"BAIRRO"},
-    "LOGRADOURO": {"LOGRADOURO", "ENDERECO", "ENDERECO LOGRADOURO", "ENDEREÇO"},
-    "NUMERO": {"NUMERO", "NRO"},
+    "LOGRADOURO": {"LOGRADOURO", "ENDERECO", "ENDERECO LOGRADOURO", "ENDEREÃ‡O"},
+    "NUMERO": {"NUMERO", "NRO", "NUM", "N"},
     "COMPLEMENTO": {"COMPLEMENTO"},
     "CEP": {"CEP"},
     "TELEFONE1": {
@@ -209,6 +212,10 @@ HEADER_ALIASES = {
         "LEMIT",
         "NOVA VIDA",
         "NOVAVIDA",
+        "FONE",
+        "DDD + FONE",
+        "DDD+FONE",
+        "DDD FONE",
     },
     "TELEFONE2": {"TELEFONE2", "TELEFONE_02", "CELULAR2", "TEL2", "CEL2", "FIXO2", "COMERCIAL2"},
     "TELEFONE3": {"TELEFONE3", "TELEFONE_03", "CELULAR3", "TEL3", "CEL3", "FIXO3", "TELEFONE_04", "TELEFONE_05", "TELEFONE_06"},
@@ -227,10 +234,45 @@ HEADER_ALIASES = {
     "SEXO": {"SEXO", "GENERO"},
     "EMAIL": {"EMAIL", "E-MAIL", "MAIL"},
     "CARGO": {"CARGO"},
+    "DDD": {"DDD"},
 }
 PHONE_HEADER_HINTS = ("TELEFONE", "TEL", "CELULAR", "CEL", "FONE", "LEMIT", "NOVAVIDA", "FIXO", "COMERCIAL")
-VALID_BASE_SEGMENTS = {"INSS", "GOVERNO", "PREFEITURA"}
+VALID_BASE_SEGMENTS = {"INSS", "CREFAZ", "GOVERNO", "PREFEITURA"}
 PUBLIC_BASE_SEGMENTS = {"GOVERNO", "PREFEITURA"}
+OCCURRENCE_STR_MAX_LENGTHS: dict[str, int] = {
+    "cpf": 11,
+    "cpf_original": 20,
+    "base_segment": 12,
+    "base_source": 120,
+    "nome": 255,
+    "nome_higienizado": 255,
+    "matricula": 80,
+    "servico": 255,
+    "situacao": 120,
+    "nu_nb": 30,
+    "pis": 20,
+    "entidade": 255,
+    "secretaria": 255,
+    "convenio": 255,
+    "cbo_titulo": 255,
+    "esp": 10,
+    "ddb": 40,
+    "uf": 2,
+    "cidade": 120,
+    "bairro": 120,
+    "logradouro": 255,
+    "numero": 40,
+    "complemento": 120,
+    "cep": 20,
+    "telefone1": 20,
+    "telefone2": 20,
+    "telefone3": 20,
+    "dt_nasc": 40,
+    "nome_mae": 255,
+    "sexo": 20,
+    "email": 255,
+    "row_hash": 64,
+}
 
 
 @dataclass
@@ -336,6 +378,9 @@ def normalize_base_segment(value: str | None, default: str = "INSS") -> str:
         "PREF": "PREFEITURA",
         "PREFEITURA": "PREFEITURA",
         "INSS": "INSS",
+        "CREF": "CREFAZ",
+        "CREFAS": "CREFAZ",
+        "CREFAZ": "CREFAZ",
     }
     resolved = aliases.get(normalized, normalized)
     return resolved if resolved in VALID_BASE_SEGMENTS else default
@@ -372,18 +417,79 @@ def strip_excel_trailing_decimal(text: str) -> str:
 
 
 def only_digits(text: str) -> str:
-    return re.sub(r"\D", "", strip_excel_trailing_decimal(text))
+    cleaned = strip_excel_trailing_decimal(text)
+    # Planilhas CREFAZ podem trazer CPF/CNPJ em notacao cientifica (ex.: 1,48424E+13).
+    if re.fullmatch(r"-?\d+[.,]\d+e[+-]?\d+", cleaned, flags=re.IGNORECASE):
+        try:
+            numeric = Decimal(cleaned.replace(",", "."))
+            as_text = format(numeric, "f")
+            integer_part = as_text.split(".", 1)[0]
+            return re.sub(r"\D", "", integer_part)
+        except (InvalidOperation, ValueError):
+            pass
+    return re.sub(r"\D", "", cleaned)
 
 
 def normalize_cpf(text: str) -> str:
     digits = only_digits(text)
     if not digits:
         return ""
+    if len(digits) == 14:
+        # Quando o campo "CPF" vem com CNPJ, geramos uma chave numerica estavel
+        # para manter compatibilidade com o schema atual (11 digitos no campo cpf).
+        digest = hashlib.sha1(digits.encode("utf-8")).hexdigest()
+        stable_tail = int(digest[:12], 16) % 10_000_000_000
+        return f"9{stable_tail:010d}"
     if len(digits) > 11:
         digits = digits[-11:]
     if set(digits) == {"0"}:
         return ""
     return digits.zfill(11)
+
+
+def normalize_document_original(text: str) -> str:
+    digits = only_digits(text)
+    if not digits:
+        return ""
+    return digits
+
+
+def is_valid_cpf_digits(digits: str) -> bool:
+    if not re.fullmatch(r"\d{11}", digits):
+        return False
+    if len(set(digits)) == 1:
+        return False
+    total = sum(int(digits[i]) * (10 - i) for i in range(9))
+    check_1 = (total * 10) % 11
+    if check_1 == 10:
+        check_1 = 0
+    if check_1 != int(digits[9]):
+        return False
+    total = sum(int(digits[i]) * (11 - i) for i in range(10))
+    check_2 = (total * 10) % 11
+    if check_2 == 10:
+        check_2 = 0
+    return check_2 == int(digits[10])
+
+
+def is_valid_cnpj_digits(digits: str) -> bool:
+    if not re.fullmatch(r"\d{14}", digits):
+        return False
+    if len(set(digits)) == 1:
+        return False
+    weights_1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+    weights_2 = [6] + weights_1
+    total_1 = sum(int(digits[i]) * weights_1[i] for i in range(12))
+    check_1 = 11 - (total_1 % 11)
+    if check_1 >= 10:
+        check_1 = 0
+    if check_1 != int(digits[12]):
+        return False
+    total_2 = sum(int(digits[i]) * weights_2[i] for i in range(13))
+    check_2 = 11 - (total_2 % 11)
+    if check_2 >= 10:
+        check_2 = 0
+    return check_2 == int(digits[13])
 
 
 def normalize_phone(text: str) -> str:
@@ -434,8 +540,69 @@ def parse_species_filter(value: str) -> list[str]:
     return normalize_species_list([value]) if value else []
 
 
+def build_document_search_terms(raw_digits: str) -> list[str]:
+    digits = only_digits(raw_digits)
+    if not digits:
+        return []
+    variants: list[str] = []
+    for candidate in (
+        digits,
+        digits.lstrip("0"),
+        digits.zfill(11) if len(digits) <= 11 else "",
+        digits.zfill(14) if len(digits) <= 14 else "",
+    ):
+        value = candidate.strip()
+        if value and value not in variants:
+            variants.append(value)
+    return variants
+
+
 def normalize_upper(text: str) -> str:
     return norm_text(text).upper()
+
+
+def normalize_uf(text: str) -> str:
+    value = normalize_upper(text)
+    letters = re.sub(r"[^A-Z]", "", value)
+    if len(letters) >= 2:
+        return letters[:2]
+    return letters
+
+
+def clamp_occurrence_string_lengths(normalized: dict[str, str | Decimal | None]) -> None:
+    for field, max_len in OCCURRENCE_STR_MAX_LENGTHS.items():
+        value = normalized.get(field)
+        if value is None:
+            continue
+        text = str(value)
+        if len(text) > max_len:
+            normalized[field] = text[:max_len]
+
+
+def write_import_error_report(batch_id: int, rows: list[dict[str, str]]) -> Path:
+    ensure_directories()
+    target = settings.exports_dir / f"import_errors_batch_{batch_id}_{datetime.now(UTC):%Y%m%d_%H%M%S}.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "erros_importacao"
+    headers = [
+        "BATCH_ID",
+        "ARQUIVO",
+        "LINHA_ARQUIVO",
+        "ERRO",
+        "CPF_CHAVE",
+        "CPF_CNPJ_ORIGINAL",
+        "NOME",
+        "TELEFONE",
+        "UF",
+        "CIDADE",
+        "DADOS_BRUTOS_JSON",
+    ]
+    ws.append(headers)
+    for item in rows:
+        ws.append([item.get(key, "") for key in headers])
+    wb.save(target)
+    return target
 
 
 def normalize_token(text: object) -> str:
@@ -792,6 +959,13 @@ def get_first_value(row: dict[str, str], *keys: str) -> str:
         value = norm_text(row.get(key, ""))
         if value:
             return value
+    # Fallback para lidar com colunas extras com acentos/perda de charset no cabecalho.
+    normalized_items = [(normalize_token(existing_key), norm_text(existing_value)) for existing_key, existing_value in row.items()]
+    for key in keys:
+        target = normalize_token(key)
+        for normalized_key, normalized_value in normalized_items:
+            if normalized_key == target and normalized_value:
+                return normalized_value
     return ""
 
 
@@ -874,6 +1048,13 @@ def detect_phones(row: dict[str, str]) -> list[str]:
         phone = normalize_phone(row.get(key, ""))
         if phone and phone not in phones:
             phones.append(phone)
+    # Layout CREFAZ costuma vir com DDD separado de FONE.
+    ddd = normalize_ddd(row.get("DDD", "") or row.get("EXTRA::DDD", ""))
+    fone = normalize_phone(row.get("FONE", "") or row.get("EXTRA::FONE", ""))
+    if ddd and len(ddd) == 2 and fone and len(fone) in {8, 9}:
+        combined = normalize_phone(ddd + fone)
+        if combined and combined not in phones:
+            phones.insert(0, combined)
     return phones[:3]
 
 
@@ -1096,7 +1277,7 @@ def compute_row_hash(payload: dict[str, str]) -> str:
 
 def normalize_row(row: dict[str, str]) -> dict[str, str | Decimal | None]:
     phones = detect_phones(row)
-    cpf_original = only_digits(get_first_value(row, "CPF"))
+    cpf_original = normalize_document_original(get_first_value(row, "CPF"))
     nome_higienizado = get_first_value(row, "NOME_HIGIENIZADO").upper()
     nome_base = get_first_value(row, "NOME", "NOME BENEFICIARIO", "NOME DO SERVIDOR", "SERVIDOR", "EXTRA::NAME").upper() or nome_higienizado
     esp = normalize_species(get_first_value(row, "ESP", "ESPECIE"))
@@ -1107,8 +1288,8 @@ def normalize_row(row: dict[str, str]) -> dict[str, str | Decimal | None]:
     margem_liquida = parse_money(get_first_value(row, "MARGEM_LIQUIDA"))
     margem_bruta = parse_money(get_first_value(row, "MARGEM_BRUTA"))
     margem_utilizada = parse_money(get_first_value(row, "MARGEM_UTILIZADA"))
-    servico = normalize_upper(get_first_value(row, "SERVICO", "EXTRA::SERVICO", "EXTRA::SERVIÇO"))
-    situacao = normalize_upper(get_first_value(row, "SITUACAO", "EXTRA::SITUACAO", "EXTRA::SITUAÇÃO", "EXTRA::SITUACA", "EXTRA::STATUS"))
+    servico = normalize_upper(get_first_value(row, "SERVICO", "EXTRA::SERVICO", "EXTRA::SERVIÃ‡O"))
+    situacao = normalize_upper(get_first_value(row, "SITUACAO", "EXTRA::SITUACAO", "EXTRA::SITUAÃ‡ÃƒO", "EXTRA::SITUACA", "EXTRA::STATUS"))
     cbo_titulo = normalize_upper(
         get_first_value(row, "CBO_TITULO", "EXTRA::CBO_TITULO", "EXTRA::CBO TITULO", "EXTRA::CBO_TIT", "EXTRA::CBO TIT")
     )
@@ -1121,7 +1302,7 @@ def normalize_row(row: dict[str, str]) -> dict[str, str | Decimal | None]:
         vl_rmc = calculate_rmc_from_rmi(vl_rmi)
     extras = {key.replace("EXTRA::", "", 1): value for key, value in row.items() if key.startswith("EXTRA::") and value}
     tipo_vinculo = normalize_upper(get_first_value(row, "REGIME_CONTRATACAO", "EXTRA::REGIME DE CONTRATACAO", "EXTRA::TIPO DE VINCULO", "EXTRA::TIPO_VINCULO", "EXTRA::VINCULO"))
-    cargo_funcao = normalize_upper(get_first_value(row, "CARGO", "EXTRA::CARGO", "EXTRA::FUNCAO", "EXTRA::FUNÇÃO", "EXTRA::CARGO/FUNCAO", "EXTRA::CARGO FUNCAO"))
+    cargo_funcao = normalize_upper(get_first_value(row, "CARGO", "EXTRA::CARGO", "EXTRA::FUNCAO", "EXTRA::FUNÃ‡ÃƒO", "EXTRA::CARGO/FUNCAO", "EXTRA::CARGO FUNCAO"))
     data_admissao = normalize_date_text(
         get_first_value(
             row,
@@ -1174,7 +1355,7 @@ def normalize_row(row: dict[str, str]) -> dict[str, str | Decimal | None]:
         "margem_liquida": margem_liquida,
         "margem_bruta": margem_bruta,
         "margem_utilizada": margem_utilizada,
-        "uf": normalize_upper(get_first_value(row, "UF")),
+        "uf": normalize_uf(get_first_value(row, "UF")),
         "cidade": normalize_upper(get_first_value(row, "CIDADE")),
         "bairro": normalize_upper(get_first_value(row, "BAIRRO")),
         "logradouro": normalize_upper(get_first_value(row, "LOGRADOURO")),
@@ -1233,7 +1414,7 @@ def enrich_normalized_row_with_cep(
 
     field_map = {
         "cep": only_digits(getattr(address, "cep", "")),
-        "uf": normalize_upper(getattr(address, "uf", "")),
+        "uf": normalize_uf(getattr(address, "uf", "")),
         "cidade": normalize_upper(getattr(address, "cidade", "")),
         "bairro": normalize_upper(getattr(address, "bairro", "")),
         "logradouro": normalize_upper(getattr(address, "logradouro", "")),
@@ -1270,7 +1451,7 @@ def enrich_normalized_row_with_ddd(
     if ddd_info is None:
         return normalized
 
-    ddd_uf = normalize_upper(getattr(ddd_info, "uf", ""))
+    ddd_uf = normalize_uf(getattr(ddd_info, "uf", ""))
     ddd_cities = tuple(normalize_upper(city) for city in getattr(ddd_info, "cidades", ()) if city)
     updates: dict[str, object] = {
         "DDD_TELEFONE": ddd,
@@ -1279,7 +1460,7 @@ def enrich_normalized_row_with_ddd(
     if ddd_cities:
         updates["DDD_CIDADES_BRASILAPI"] = list(ddd_cities)
 
-    current_uf = normalize_upper(str(normalized.get("uf") or ""))
+    current_uf = normalize_uf(str(normalized.get("uf") or ""))
     if not current_uf and ddd_uf:
         normalized["uf"] = ddd_uf
         updates["UF_INFERIDA_POR_DDD"] = ddd_uf
@@ -1379,52 +1560,23 @@ def chunked_values(values: set[str] | list[str], chunk_size: int = SQLITE_VARIAB
     return [sequence[index:index + chunk_size] for index in range(0, len(sequence), chunk_size)]
 
 
-def prefetch_existing_cpfs(session: Session, cpfs: set[str]) -> set[str]:
-    existing: set[str] = set()
-    if not cpfs:
-        return existing
-    for cpf_chunk in chunked_values(cpfs):
-        rows = session.execute(select(ClientOccurrence.cpf).where(ClientOccurrence.cpf.in_(cpf_chunk)).distinct())
-        existing.update(value for value in rows.scalars().all() if value)
-    return existing
-
-
-def extract_cpfs_from_rows(rows: list[dict[str, str]]) -> set[str]:
-    cpfs: set[str] = set()
-    for row in rows:
-        cpf = normalize_cpf(get_first_value(row, "CPF", "NU CPF", "NUCPF", "NUMERO CPF", "DOCUMENTO CPF"))
-        if cpf:
-            cpfs.add(cpf)
-    return cpfs
-
-
-def collect_date_like_values(row: dict[str, str]) -> list[tuple[str, str]]:
-    hints = ("DT", "DATA", "NASC", "DDB", "CONCESSAO", "BENEFICIO")
-    items: list[tuple[str, str]] = []
-    for key, value in row.items():
-        if not value:
-            continue
-        upper_key = key.upper()
-        if any(token in upper_key for token in hints):
-            items.append((key, str(value)))
-    return items
-
-
 def rebuild_clients_for_cpfs(session: Session, cpfs: set[str]) -> None:
     normalized_cpfs = {cpf for cpf in cpfs if cpf}
     if not normalized_cpfs:
         return
 
-    existing_do_not_call: dict[str, bool] = {}
+    preserved_status: dict[str, tuple[bool, str]] = {}
     for cpf_chunk in chunked_values(normalized_cpfs):
-        rows = session.execute(select(Client.cpf, Client.do_not_call).where(Client.cpf.in_(cpf_chunk)))
-        existing_do_not_call.update({cpf: bool(do_not_call) for cpf, do_not_call in rows.all()})
+        current_rows = session.execute(select(Client.cpf, Client.do_not_call, Client.do_not_call_reason).where(Client.cpf.in_(cpf_chunk))).all()
+        for current_cpf, do_not_call, do_not_call_reason in current_rows:
+            preserved_status[current_cpf] = (bool(do_not_call), do_not_call_reason or "")
+
     for cpf_chunk in chunked_values(normalized_cpfs):
         session.execute(delete(Client).where(Client.cpf.in_(cpf_chunk)))
     session.flush()
     session.expire_all()
 
-    grouped: dict[str, dict[str, object]] = {}
+    grouped: dict[str, Client] = {}
     for cpf_chunk in chunked_values(normalized_cpfs):
         rows = session.execute(
             select(
@@ -1459,46 +1611,47 @@ def rebuild_clients_for_cpfs(session: Session, cpfs: set[str]) -> None:
             row_segment = normalize_base_segment(row.base_segment)
             client = grouped.get(row.cpf)
             if client is None:
-                client = {
-                    "cpf": row.cpf,
-                    "nome_atual": row.nome,
-                    "uf_atual": row.uf,
-                    "cidade_atual": row.cidade,
-                    "melhor_telefone": row.telefone1 or row.telefone2 or row.telefone3,
-                    "tem_telefone": bool(row.telefone1 or row.telefone2 or row.telefone3),
-                    "tem_inss": row_segment == "INSS",
-                    "tem_governo": row_segment in PUBLIC_BASE_SEGMENTS,
-                    "pis_atual": row.pis or "",
-                    "matricula_atual": row.matricula or "",
-                    "entidade_atual": row.entidade or "",
-                    "maior_margem": row.vl_margem,
-                    "ultima_referencia": latest_reference_label(row.ano_referencia, row.mes_referencia),
-                    "qtd_ocorrencias": 0,
-                    "do_not_call": existing_do_not_call.get(row.cpf, False),
-                }
+                do_not_call, do_not_call_reason = preserved_status.get(row.cpf, (False, ""))
+                client = Client(
+                    cpf=row.cpf,
+                    nome_atual=row.nome,
+                    uf_atual=row.uf,
+                    cidade_atual=row.cidade,
+                    melhor_telefone=row.telefone1 or row.telefone2 or row.telefone3,
+                    tem_telefone=bool(row.telefone1 or row.telefone2 or row.telefone3),
+                    do_not_call=do_not_call,
+                    do_not_call_reason=do_not_call_reason,
+                    tem_inss=row_segment == "INSS",
+                    tem_governo=row_segment in PUBLIC_BASE_SEGMENTS,
+                    pis_atual=row.pis or "",
+                    matricula_atual=row.matricula or "",
+                    entidade_atual=row.entidade or "",
+                    maior_margem=row.vl_margem,
+                    ultima_referencia=latest_reference_label(row.ano_referencia, row.mes_referencia),
+                    qtd_ocorrencias=0,
+                )
                 grouped[row.cpf] = client
-            client["qtd_ocorrencias"] = int(client.get("qtd_ocorrencias", 0)) + 1
-            client["nome_atual"] = prefer_non_empty(str(client.get("nome_atual", "")), row.nome)
-            client["uf_atual"] = prefer_non_empty(str(client.get("uf_atual", "")), row.uf)
-            client["cidade_atual"] = prefer_non_empty(str(client.get("cidade_atual", "")), row.cidade)
-            client["pis_atual"] = prefer_non_empty(str(client.get("pis_atual", "")), row.pis or "")
-            client["matricula_atual"] = prefer_non_empty(str(client.get("matricula_atual", "")), row.matricula or "")
-            client["entidade_atual"] = prefer_non_empty(str(client.get("entidade_atual", "")), row.entidade or "")
+            client.qtd_ocorrencias += 1
+            client.nome_atual = prefer_non_empty(client.nome_atual, row.nome)
+            client.uf_atual = prefer_non_empty(client.uf_atual, row.uf)
+            client.cidade_atual = prefer_non_empty(client.cidade_atual, row.cidade)
+            client.pis_atual = prefer_non_empty(client.pis_atual, row.pis or "")
+            client.matricula_atual = prefer_non_empty(client.matricula_atual, row.matricula or "")
+            client.entidade_atual = prefer_non_empty(client.entidade_atual, row.entidade or "")
             if row_segment == "INSS":
-                client["tem_inss"] = True
+                client.tem_inss = True
             if row_segment in PUBLIC_BASE_SEGMENTS:
-                client["tem_governo"] = True
+                client.tem_governo = True
             for candidate in (row.telefone1, row.telefone2, row.telefone3):
                 if candidate:
-                    client["melhor_telefone"] = candidate
-                    client["tem_telefone"] = True
+                    client.melhor_telefone = candidate
+                    client.tem_telefone = True
                     break
-            current_margin = client.get("maior_margem")
-            if row.vl_margem is not None and (current_margin is None or row.vl_margem > current_margin):
-                client["maior_margem"] = row.vl_margem
-            client["ultima_referencia"] = latest_reference_label(row.ano_referencia, row.mes_referencia)
-    if grouped:
-        session.execute(insert(Client), list(grouped.values()))
+            if row.vl_margem is not None and (client.maior_margem is None or row.vl_margem > client.maior_margem):
+                client.maior_margem = row.vl_margem
+            client.ultima_referencia = latest_reference_label(row.ano_referencia, row.mes_referencia)
+    for client in grouped.values():
+        session.merge(client)
     if grouped:
         session.flush()
 
@@ -1592,6 +1745,8 @@ def backfill_missing_addresses(session: Session, batch_size: int | None = None) 
 
 
 def delete_batch(session: Session, batch_id: int) -> tuple[bool, str]:
+    affected_cpfs: set[str] = set()
+    archived_file_paths: list[str] = []
     with serialized_write():
         batch = session.get(ImportBatch, batch_id)
         if batch is None:
@@ -1603,7 +1758,7 @@ def delete_batch(session: Session, batch_id: int) -> tuple[bool, str]:
             select(SourceFile.id, SourceFile.caminho_arquivo).where(SourceFile.batch_id == batch_id)
         ).all()
         source_file_ids = [row.id for row in source_files]
-        archived_files = [Path(row.caminho_arquivo) for row in source_files]
+        archived_file_paths = [str(row.caminho_arquivo) for row in source_files if row.caminho_arquivo]
         affected_cpfs = set(
             session.scalars(
                 select(ClientOccurrence.cpf)
@@ -1616,12 +1771,26 @@ def delete_batch(session: Session, batch_id: int) -> tuple[bool, str]:
             session.execute(delete(ClientOccurrence).where(ClientOccurrence.source_file_id.in_(source_file_ids)))
             session.execute(delete(SourceFile).where(SourceFile.id.in_(source_file_ids)))
         session.execute(delete(ImportBatch).where(ImportBatch.id == batch_id))
-        rebuild_clients_for_cpfs(session, affected_cpfs)
         session.commit()
 
-    for path in archived_files:
-        if path.exists():
-            path.unlink(missing_ok=True)
+    def _cleanup_after_delete(cpfs: set[str], file_paths: list[str]) -> None:
+        cleanup_session = SessionLocal()
+        try:
+            if cpfs:
+                rebuild_clients_for_cpfs(cleanup_session, cpfs)
+                cleanup_session.commit()
+        finally:
+            cleanup_session.close()
+        for raw_path in file_paths:
+            path = Path(raw_path)
+            if path.exists():
+                path.unlink(missing_ok=True)
+
+    threading.Thread(
+        target=_cleanup_after_delete,
+        args=(set(affected_cpfs), list(archived_file_paths)),
+        daemon=True,
+    ).start()
 
     return True, "Campanha apagada com sucesso."
 
@@ -1632,6 +1801,7 @@ def process_import_batch(session: Session, batch: ImportBatch, request: ImportRe
     temp_dir = Path(tempfile.mkdtemp(prefix="inss_import_"))
     allowed_species = set(normalize_species_list(request.allowed_species))
     progress_flush_rows = 5000
+    insert_chunk_size = 2000
 
     def update_batch_progress(message: str) -> None:
         current_batch = session.get(ImportBatch, batch.id)
@@ -1654,6 +1824,7 @@ def process_import_batch(session: Session, batch: ImportBatch, request: ImportRe
         cpf_existence_cache: dict[str, bool] = {}
         new_cpfs_seen: set[str] = set()
         updated_cpfs_seen: set[str] = set()
+        row_errors: list[dict[str, str]] = []
         total_files = len(request.files)
         for file_index, file_path in enumerate(request.files, start=1):
             update_batch_progress(f"Preparando arquivo {file_index}/{total_files}: {file_path.name}")
@@ -1664,18 +1835,9 @@ def process_import_batch(session: Session, batch: ImportBatch, request: ImportRe
                 if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS or not rows:
                     continue
             file_hash = compute_file_hash(file_path)
-            file_cpfs = extract_cpfs_from_rows(rows)
 
             with serialized_write():
-                uncached_cpfs = {cpf for cpf in file_cpfs if cpf not in cpf_existence_cache}
-                if uncached_cpfs:
-                    existing_cpfs = prefetch_existing_cpfs(session, uncached_cpfs)
-                    for cpf in uncached_cpfs:
-                        cpf_existence_cache[cpf] = cpf in existing_cpfs
-                duplicate_file_exists = session.scalar(
-                    select(SourceFile.id).where(SourceFile.hash_arquivo == file_hash).limit(1)
-                )
-                if duplicate_file_exists is not None:
+                if session.scalar(select(func.count()).select_from(SourceFile).where(SourceFile.hash_arquivo == file_hash)):
                     summary.files_skipped += 1
                     summary.duplicate_files.append(file_path.name)
                     update_batch_progress(
@@ -1702,25 +1864,96 @@ def process_import_batch(session: Session, batch: ImportBatch, request: ImportRe
 
                 seen_row_hashes: set[str] = set()
                 file_affected_cpfs: set[str] = set()
-                occurrence_buffer: list[ClientOccurrence] = []
-                for row_index, raw_row in enumerate(rows, start=1):
-                    try:
-                        normalized = normalize_row(raw_row)
-                    except Exception as exc:
-                        summary.invalid_rows += 1
-                        date_like_values = collect_date_like_values(raw_row)
-                        details = " | ".join(f"{key}={value}" for key, value in date_like_values[:6]) or "sem campos de data detectados"
-                        error_message = (
-                            f"{file_path.name}: linha {row_index} invalida ({type(exc).__name__}: {exc}). "
-                            f"Campos analisados: {details}"
+                is_crefaz_import = normalize_base_segment(batch.base_segment) == "CREFAZ"
+                staged_occurrences: list[dict[str, object]] = []
+                staged_context: list[tuple[int, dict[str, object]]] = []
+
+                def flush_staged_occurrences() -> None:
+                    if not staged_occurrences:
+                        return
+
+                    unresolved_cpfs = sorted(
+                        {
+                            str(payload.get("cpf") or "")
+                            for payload in staged_occurrences
+                            if str(payload.get("cpf") or "") and str(payload.get("cpf") or "") not in cpf_existence_cache
+                        }
+                    )
+                    for cpf_chunk in chunked_values(unresolved_cpfs):
+                        existing_cpfs = set(
+                            session.scalars(
+                                select(ClientOccurrence.cpf).where(ClientOccurrence.cpf.in_(cpf_chunk)).distinct()
+                            ).all()
                         )
-                        if len(summary.validation_errors) < 100:
-                            summary.validation_errors.append(error_message)
-                        continue
-                    normalized = enrich_normalized_row_with_cep(normalized, cep_cache)
-                    normalized = enrich_normalized_row_with_ddd(normalized, ddd_cache)
+                        for cpf in cpf_chunk:
+                            cpf_existence_cache[cpf] = cpf in existing_cpfs
+
+                    for payload in staged_occurrences:
+                        cpf_value = str(payload.get("cpf") or "")
+                        if not cpf_value:
+                            continue
+                        if cpf_existence_cache.get(cpf_value, False):
+                            if cpf_value not in updated_cpfs_seen:
+                                summary.cpfs_updated += 1
+                                updated_cpfs_seen.add(cpf_value)
+                        else:
+                            if cpf_value not in new_cpfs_seen:
+                                summary.cpfs_new += 1
+                                new_cpfs_seen.add(cpf_value)
+
+                    try:
+                        session.execute(insert(ClientOccurrence), staged_occurrences)
+                        session.flush()
+                        for payload in staged_occurrences:
+                            cpf_value = str(payload.get("cpf") or "")
+                            if cpf_value:
+                                file_affected_cpfs.add(cpf_value)
+                            summary.rows_imported += 1
+                            cpf_existence_cache[cpf_value] = True
+                    except SQLAlchemyError:
+                        session.rollback()
+                        for payload, (row_index, raw_row) in zip(staged_occurrences, staged_context):
+                            try:
+                                with session.begin_nested():
+                                    session.add(ClientOccurrence(**payload))
+                                    session.flush()
+                            except SQLAlchemyError as exc:
+                                summary.invalid_rows += 1
+                                summary.row_errors += 1
+                                row_errors.append(
+                                    {
+                                        "BATCH_ID": str(batch.id),
+                                        "ARQUIVO": file_path.name,
+                                        "LINHA_ARQUIVO": str(row_index),
+                                        "ERRO": str(exc)[:1000],
+                                        "CPF_CHAVE": str(payload.get("cpf") or ""),
+                                        "CPF_CNPJ_ORIGINAL": str(payload.get("cpf_original") or ""),
+                                        "NOME": str(payload.get("nome") or ""),
+                                        "TELEFONE": str(payload.get("telefone1") or payload.get("telefone2") or payload.get("telefone3") or ""),
+                                        "UF": str(payload.get("uf") or ""),
+                                        "CIDADE": str(payload.get("cidade") or ""),
+                                        "DADOS_BRUTOS_JSON": json.dumps(raw_row, ensure_ascii=False)[:30000],
+                                    }
+                                )
+                                continue
+                            cpf_value = str(payload.get("cpf") or "")
+                            if cpf_value:
+                                file_affected_cpfs.add(cpf_value)
+                                cpf_existence_cache[cpf_value] = True
+                            summary.rows_imported += 1
+
+                    staged_occurrences.clear()
+                    staged_context.clear()
+
+                for row_index, raw_row in enumerate(rows, start=1):
+                    normalized = normalize_row(raw_row)
+                    if not is_crefaz_import:
+                        normalized = enrich_normalized_row_with_cep(normalized, cep_cache)
+                        normalized = enrich_normalized_row_with_ddd(normalized, ddd_cache)
                     normalized["base_segment"] = normalize_base_segment(batch.base_segment)
                     normalized["base_source"] = batch.base_source
+                    normalized["uf"] = normalize_uf(str(normalized.get("uf") or ""))
+                    clamp_occurrence_string_lengths(normalized)
                     if normalized["base_segment"] != "INSS":
                         if not get_first_value(raw_row, "SALARIO"):
                             normalized["salario"] = None
@@ -1734,52 +1967,77 @@ def process_import_batch(session: Session, batch: ImportBatch, request: ImportRe
                     if allowed_species and str(normalized["esp"]) not in allowed_species:
                         summary.species_filtered_rows += 1
                         continue
-                    row_hash = compute_row_hash(
-                        {
-                            "source_file": source_file.nome_arquivo,
+                    segment_value = str(normalized["base_segment"])
+                    hash_payload = {
+                        "source_file": source_file.nome_arquivo,
+                        "cpf": str(normalized["cpf"]),
+                        "matricula": str(normalized["matricula"]),
+                        "servico": str(normalized["servico"]),
+                        "nu_nb": str(normalized["nu_nb"]),
+                        "vl_margem": str(normalized["vl_margem"]),
+                        "margem_total": str(normalized["margem_total"]),
+                        "telefone1": str(normalized["telefone1"]),
+                        "telefone2": str(normalized["telefone2"]),
+                        "telefone3": str(normalized["telefone3"]),
+                    }
+                    if segment_value == "CREFAZ":
+                        extras = parse_extras_json(str(normalized.get("extras_json") or ""))
+                        numero_cliente = norm_text(
+                            str(
+                                extras.get("NÂº DO CLIENTE")
+                                or extras.get("N DO CLIENTE")
+                                or extras.get("NRO CLIENTE")
+                                or extras.get("NUMERO CLIENTE")
+                                or ""
+                            )
+                        )
+                        conta_contrato = norm_text(str(extras.get("CONTA CONTRATO") or extras.get("CONTA_CONTRATO") or ""))
+                        numero_instalacao = norm_text(
+                            str(
+                                extras.get("NUMERO INSTALAÃ‡ÃƒO")
+                                or extras.get("NUMERO INSTALACAO")
+                                or extras.get("NÂº INSTALACAO")
+                                or extras.get("N INSTALACAO")
+                                or ""
+                            )
+                        )
+                        fatura_atual = norm_text(str(extras.get("FATURA ATUAL") or ""))
+                        # Para CREFAZ, a mesma pessoa pode ter multiplos imoveis.
+                        # Entao a deduplicacao precisa considerar identificadores da unidade.
+                        hash_payload = {
+                            "doc_original": str(normalized["cpf_original"] or normalized["cpf"]),
                             "cpf": str(normalized["cpf"]),
-                            "matricula": str(normalized["matricula"]),
-                            "servico": str(normalized["servico"]),
-                            "nu_nb": str(normalized["nu_nb"]),
-                            "vl_margem": str(normalized["vl_margem"]),
-                            "margem_total": str(normalized["margem_total"]),
+                            "nome": str(normalized["nome"]),
+                            "numero_cliente": numero_cliente,
+                            "conta_contrato": conta_contrato,
+                            "numero_instalacao": numero_instalacao,
+                            "fatura_atual": fatura_atual,
+                            "cidade": str(normalized["cidade"]),
+                            "logradouro": str(normalized["logradouro"]),
+                            "numero": str(normalized["numero"]),
+                            "cep": str(normalized["cep"]),
                             "telefone1": str(normalized["telefone1"]),
                             "telefone2": str(normalized["telefone2"]),
                             "telefone3": str(normalized["telefone3"]),
                         }
-                    )
+                    row_hash = compute_row_hash(hash_payload)
                     if row_hash in seen_row_hashes:
                         summary.invalid_rows += 1
                         summary.duplicate_rows += 1
                         continue
                     seen_row_hashes.add(row_hash)
                     cpf_value = str(normalized["cpf"])
-                    if cpf_value not in cpf_existence_cache:
-                        exists = session.scalar(
-                            select(ClientOccurrence.id).where(ClientOccurrence.cpf == cpf_value).limit(1)
-                        )
-                        cpf_existence_cache[cpf_value] = exists is not None
-                    if cpf_existence_cache[cpf_value]:
-                        if cpf_value not in updated_cpfs_seen:
-                            summary.cpfs_updated += 1
-                            updated_cpfs_seen.add(cpf_value)
-                    else:
-                        if cpf_value not in new_cpfs_seen:
-                            summary.cpfs_new += 1
-                            new_cpfs_seen.add(cpf_value)
                     if not any(str(normalized[field]) for field in ("telefone1", "telefone2", "telefone3")):
                         summary.rows_without_phone += 1
                     if not str(normalized["cidade"]):
                         summary.rows_without_city += 1
-                    occurrence_buffer.append(ClientOccurrence(source_file_id=source_file.id, row_hash=row_hash, **normalized))
-                    file_affected_cpfs.add(cpf_value)
-                    summary.rows_imported += 1
+                    staged_occurrences.append({"source_file_id": source_file.id, "row_hash": row_hash, **normalized})
+                    staged_context.append((row_index, raw_row))
+                    if len(staged_occurrences) >= insert_chunk_size:
+                        flush_staged_occurrences()
 
                     if row_index % progress_flush_rows == 0:
-                        if occurrence_buffer:
-                            session.add_all(occurrence_buffer)
-                            occurrence_buffer.clear()
-                        session.flush()
+                        flush_staged_occurrences()
                         current_batch = session.get(ImportBatch, batch.id)
                         if current_batch is not None:
                             current_batch.resumo = (
@@ -1788,9 +2046,7 @@ def process_import_batch(session: Session, batch: ImportBatch, request: ImportRe
                             )
                         session.commit()
 
-                if occurrence_buffer:
-                    session.add_all(occurrence_buffer)
-                    occurrence_buffer.clear()
+                flush_staged_occurrences()
                 rebuild_clients_for_cpfs(session, file_affected_cpfs)
                 summary.files_imported += 1
                 current_batch = session.get(ImportBatch, batch.id)
@@ -1803,8 +2059,16 @@ def process_import_batch(session: Session, batch: ImportBatch, request: ImportRe
         with serialized_write():
             final_batch = session.get(ImportBatch, batch.id)
             if final_batch is not None:
+                if row_errors:
+                    report_path = write_import_error_report(batch.id, row_errors)
+                    summary.error_report_file = str(report_path)
+                    summary.validation_errors.append(
+                        f"Linhas com erro: {summary.row_errors}. Relatorio: {report_path.name}"
+                    )
                 final_batch.status = "CONCLUIDO"
                 final_batch.resumo = summary_text()
+                if summary.validation_errors:
+                    final_batch.resumo += " | Avisos: " + "; ".join(summary.validation_errors[:5])
                 session.commit()
         return summary
     except Exception as exc:
@@ -1874,8 +2138,10 @@ def build_occurrence_query(filters: FilterSet) -> Select[tuple[ClientOccurrence,
         else:
             normalized_cpf = normalize_cpf(quick_digits)
             identifier_conditions = [ClientOccurrence.cpf == normalized_cpf]
-            if len(quick_digits) < 11:
-                identifier_conditions.append(ClientOccurrence.cpf_original.ilike(f"%{quick_digits}%"))
+            if len(quick_digits) < 11 or len(quick_digits) == 14:
+                doc_terms = build_document_search_terms(quick_digits)
+                identifier_conditions.extend([ClientOccurrence.cpf_original == value for value in doc_terms])
+                identifier_conditions.extend([ClientOccurrence.cpf_original.ilike(f"%{value}%") for value in doc_terms])
             if segment == "INSS":
                 identifier_conditions.append(ClientOccurrence.nu_nb == quick_digits)
             else:
@@ -1927,8 +2193,10 @@ def build_occurrence_query(filters: FilterSet) -> Select[tuple[ClientOccurrence,
         raw_cpf = only_digits(filters.cpf)
         normalized_cpf = normalize_cpf(filters.cpf)
         cpf_conditions = [ClientOccurrence.cpf == normalized_cpf]
-        if raw_cpf and len(raw_cpf) < 11:
-            cpf_conditions.append(ClientOccurrence.cpf_original.ilike(f"%{raw_cpf}%"))
+        if raw_cpf and (len(raw_cpf) < 11 or len(raw_cpf) == 14):
+            doc_terms = build_document_search_terms(raw_cpf)
+            cpf_conditions.extend([ClientOccurrence.cpf_original == value for value in doc_terms])
+            cpf_conditions.extend([ClientOccurrence.cpf_original.ilike(f"%{value}%") for value in doc_terms])
         conditions.append(or_(*cpf_conditions))
     if filters.phone:
         phone_digits = only_digits(filters.phone)
@@ -1996,8 +2264,12 @@ def _load_clients_by_cpfs(session: Session, cpfs: set[str]) -> dict[str, Client]
     normalized_cpfs = {cpf for cpf in cpfs if cpf}
     if not normalized_cpfs:
         return {}
-    rows = session.execute(select(Client).where(Client.cpf.in_(normalized_cpfs))).scalars().all()
-    return {row.cpf: row for row in rows}
+    loaded: dict[str, Client] = {}
+    for cpf_chunk in chunked_values(normalized_cpfs):
+        rows = session.execute(select(Client).where(Client.cpf.in_(cpf_chunk))).scalars().all()
+        for row in rows:
+            loaded[row.cpf] = row
+    return loaded
 
 
 def _reference_sort_key(value: object) -> tuple[int, int]:
@@ -2091,11 +2363,23 @@ def _consolidate_results_by_cpf(results: list[dict[str, object]]) -> list[dict[s
         ranked = sorted(group, key=_row_currentness_key, reverse=True)
         latest_row = ranked[0]
         merged = dict(latest_row)
+        # Regra de negocio: DDB e campos ligados ao beneficio devem sempre vir
+        # da ocorrencia com DDB mais recente; registros antigos entram apenas no historico.
+        newest_ddb = max((parse_date_value(norm_text(str(item.get("ddb", "") or ""))) or date.min) for item in ranked)
+        benefit_candidates = [
+            item
+            for item in ranked
+            if (parse_date_value(norm_text(str(item.get("ddb", "") or ""))) or date.min) == newest_ddb
+        ] or ranked
+        benefit_source = benefit_candidates[0]
         field_names: set[str] = set()
         for item in ranked:
             field_names.update(item.keys())
         for field in field_names:
             if field in BENEFIT_BOUND_FIELDS:
+                benefit_value = benefit_source.get(field)
+                if (isinstance(benefit_value, str) and norm_text(benefit_value)) or benefit_value is not None:
+                    merged[field] = benefit_value
                 continue
             current = merged.get(field)
             if (isinstance(current, str) and not norm_text(current)) or current is None:
@@ -2131,7 +2415,7 @@ def _serialize_occurrence_row(
     ]
     endereco = ", ".join(part for part in address_parts if part)
     tipo_vinculo = _first_extra_value(extras, "REGIME_CONTRATACAO", "TIPO DE VINCULO", "TIPO_VINCULO", "VINCULO", "REGIME DE CONTRATACAO")
-    cargo_funcao = _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÃƒâ€¡ÃƒÆ’O", "CARGO/FUNCAO", "CARGO FUNCAO") or occurrence.cbo_titulo
+    cargo_funcao = _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã†â€™O", "CARGO/FUNCAO", "CARGO FUNCAO") or occurrence.cbo_titulo
     campaign_name = ""
     if segment in PUBLIC_BASE_SEGMENTS:
         campaign_name = build_public_campaign_name(
@@ -2145,8 +2429,8 @@ def _serialize_occurrence_row(
             display_vl_margem,
         )
     return {
-        "occurrence_id": occurrence.id,
         "cpf": occurrence.cpf,
+        "cpf_original": occurrence.cpf_original,
         "base_segment": occurrence.base_segment,
         "base_source": occurrence.base_source,
         "nome": occurrence.nome,
@@ -2193,101 +2477,32 @@ def _serialize_occurrence_row(
         "cargo_funcao": cargo_funcao,
         "data_admissao": normalize_date_text(_first_extra_value(extras, "DATA ADMISSAO", "DT ADMISSAO", "ADMISSAO", "DATA_ADMISSAO")),
         "campaign_name": campaign_name,
+        "numero_cliente": _first_extra_value(extras, "N DO CLIENTE", "NÂº DO CLIENTE", "NRO CLIENTE", "NUMERO CLIENTE"),
+        "conta_contrato": _first_extra_value(extras, "CONTA CONTRATO", "CONTA_CONTRATO"),
+        "numero_instalacao": _first_extra_value(extras, "NUMERO INSTALACAO", "NUMERO INSTALAÃ‡ÃƒO", "N INSTALACAO", "NÂº INSTALACAO"),
         "do_not_call": bool(client.do_not_call) if client is not None else False,
+        "do_not_call_reason": (client.do_not_call_reason or "") if client is not None else "",
         "arquivo": source_file.nome_arquivo,
         "semana": source_file.semana_label,
         "referencia": latest_reference_label(batch.ano_referencia, batch.mes_referencia),
     }
 
 
-def query_clients(session: Session, filters: FilterSet, limit: int = 200) -> list[dict[str, object]]:
-    rows = session.execute(build_occurrence_query(filters).limit(limit)).all()
-    results = [_serialize_occurrence_row(occurrence, source_file, batch) for occurrence, source_file, batch in rows]
-    if normalize_base_segment(filters.base_segment) in PUBLIC_BASE_SEGMENTS:
-        return _consolidate_public_results(results)
-    return results
-    for occurrence, source_file, batch in rows:
-        segment = normalize_base_segment(occurrence.base_segment)
-        extras = _parse_extras_json(occurrence.extras_json)
-        display_vl_margem = occurrence.vl_margem
-        display_vl_rmc = occurrence.vl_rmc
-        if segment == "INSS":
-            if display_vl_margem is None:
-                display_vl_margem = calculate_margin_from_rmi(occurrence.vl_rmi, occurrence.esp)
-            if display_vl_rmc is None:
-                display_vl_rmc = calculate_rmc_from_rmi(occurrence.vl_rmi)
-        address_parts = [
-            norm_text(occurrence.logradouro),
-            norm_text(occurrence.numero),
-            norm_text(occurrence.complemento),
-            norm_text(occurrence.bairro),
-        ]
-        endereco = ", ".join(part for part in address_parts if part)
-        results.append(
-            {
-                "cpf": occurrence.cpf,
-                "base_segment": occurrence.base_segment,
-                "base_source": occurrence.base_source,
-                "nome": occurrence.nome,
-                "matricula": occurrence.matricula,
-                "servico": occurrence.servico,
-                "situacao": occurrence.situacao,
-                "pis": occurrence.pis,
-                "entidade": occurrence.entidade,
-                "secretaria": occurrence.secretaria,
-                "convenio": occurrence.convenio,
-                "cbo_titulo": occurrence.cbo_titulo,
-                "nu_nb": occurrence.nu_nb,
-                "ddb": occurrence.ddb,
-                "dt_nasc": occurrence.dt_nasc,
-                "idade": compute_age_from_birth(occurrence.dt_nasc),
-                "sexo": occurrence.sexo,
-                "nome_mae": occurrence.nome_mae,
-                "esp": occurrence.esp,
-                "cidade": occurrence.cidade,
-                "uf": occurrence.uf,
-                "bairro": occurrence.bairro,
-                "logradouro": occurrence.logradouro,
-                "numero": occurrence.numero,
-                "complemento": occurrence.complemento,
-                "cep": occurrence.cep,
-                "endereco": endereco,
-                "email": occurrence.email,
-                "email2": _first_extra_value(extras, "EMAIL2", "EMAIL_02"),
-                "email3": _first_extra_value(extras, "EMAIL3", "EMAIL_03"),
-                "salario": occurrence.salario,
-                "vl_rmi": occurrence.vl_rmi,
-                "vl_margem": display_vl_margem,
-                "vl_rmc": display_vl_rmc,
-                "margem_total": occurrence.margem_total,
-                "margem_liquida": occurrence.margem_liquida,
-                "margem_bruta": occurrence.margem_bruta,
-                "margem_utilizada": occurrence.margem_utilizada,
-                "telefone": occurrence.telefone1 or occurrence.telefone2 or occurrence.telefone3,
-                "telefone2": occurrence.telefone2,
-                "telefone3": occurrence.telefone3,
-                "whatsapp_telefone1": _first_extra_value(extras, "FLGWHATSCEL1"),
-                "whatsapp_telefone2": _first_extra_value(extras, "FLGWHATSCEL2"),
-                "tipo_vinculo": _first_extra_value(extras, "REGIME_CONTRATACAO", "TIPO DE VINCULO", "TIPO_VINCULO", "VINCULO", "REGIME DE CONTRATACAO"),
-                "cargo_funcao": _first_extra_value(extras, "CARGO", "FUNCAO", "FUNÇÃO", "CARGO/FUNCAO", "CARGO FUNCAO") or occurrence.cbo_titulo,
-                "data_admissao": normalize_date_text(_first_extra_value(extras, "DATA ADMISSAO", "DT ADMISSAO", "ADMISSAO", "DATA_ADMISSAO")),
-                "arquivo": source_file.nome_arquivo,
-                "semana": source_file.semana_label,
-                "referencia": latest_reference_label(batch.ano_referencia, batch.mes_referencia),
-            }
-        )
-    if normalize_base_segment(filters.base_segment) in PUBLIC_BASE_SEGMENTS:
-        return _consolidate_public_results(results)
-    return results
-
-
 def count_client_results(session: Session, filters: FilterSet) -> int:
-    stmt = build_occurrence_query(filters).with_only_columns(func.count(ClientOccurrence.id)).order_by(None)
+    stmt = (
+        build_occurrence_query(filters)
+        .with_only_columns(func.count(func.distinct(ClientOccurrence.cpf)))
+        .order_by(None)
+    )
     return int(session.scalar(stmt) or 0)
 
 
 def query_clients(session: Session, filters: FilterSet, limit: int = 200, offset: int = 0) -> list[dict[str, object]]:
-    rows = session.execute(build_occurrence_query(filters).offset(max(offset, 0)).limit(limit)).all()
+    rows = session.execute(
+        build_occurrence_query(filters)
+        .offset(max(offset, 0))
+        .limit(limit)
+    ).all()
     clients_by_cpf = _load_clients_by_cpfs(session, {occurrence.cpf for occurrence, _source_file, _batch in rows})
     results = [
         _serialize_occurrence_row(occurrence, source_file, batch, clients_by_cpf.get(occurrence.cpf))
@@ -2448,6 +2663,55 @@ def export_cpfs_for_enrichment(session: Session, filters: FilterSet, file_format
         session.add(
             ExportHistory(
                 filtros_json=json.dumps({**filters.__dict__, "purpose": "phone_enrichment", "file_format": file_format}, ensure_ascii=False, default=str),
+                arquivo_saida=str(export_path),
+                total_registros=len(export_rows),
+            )
+        )
+        session.commit()
+    return export_path
+
+
+def export_wrong_number_clients_for_novavida(session: Session, filters: FilterSet, file_format: str = "xlsx") -> Path:
+    ensure_directories()
+    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    raw_rows = session.execute(build_occurrence_query(filters)).all()
+    clients_by_cpf = _load_clients_by_cpfs(session, {occurrence.cpf for occurrence, _source_file, _batch in raw_rows})
+    deduped: dict[str, dict[str, str]] = {}
+    for occurrence, _source_file, _batch in raw_rows:
+        client = clients_by_cpf.get(occurrence.cpf)
+        if client is None or not bool(client.do_not_call):
+            continue
+        if (client.do_not_call_reason or "") != "nao_e_o_cliente":
+            continue
+        if occurrence.cpf not in deduped:
+            deduped[occurrence.cpf] = {
+                "CPF": occurrence.cpf,
+                "NOME": occurrence.nome,
+                "TELEFONE": occurrence.telefone1 or occurrence.telefone2 or occurrence.telefone3 or "",
+                "MOTIVO": "Nao e o cliente",
+            }
+
+    export_rows = list(deduped.values())
+    if file_format == "csv":
+        export_path = settings.exports_dir / f"novavida_numero_errado_{timestamp}.csv"
+        with export_path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=WRONG_NUMBER_EXPORT_HEADERS, delimiter=";")
+            writer.writeheader()
+            writer.writerows(export_rows)
+    else:
+        export_path = settings.exports_dir / f"novavida_numero_errado_{timestamp}.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Numero Errado"
+        sheet.append(WRONG_NUMBER_EXPORT_HEADERS)
+        for row in export_rows:
+            sheet.append([row.get(header, "") for header in WRONG_NUMBER_EXPORT_HEADERS])
+        workbook.save(export_path)
+
+    with serialized_write():
+        session.add(
+            ExportHistory(
+                filtros_json=json.dumps({**filters.__dict__, "purpose": "novavida_wrong_number", "file_format": file_format}, ensure_ascii=False, default=str),
                 arquivo_saida=str(export_path),
                 total_registros=len(export_rows),
             )
@@ -2662,25 +2926,25 @@ def normalize_public_campaign_update_row(row: dict[str, str]) -> dict[str, str |
     cpf = normalize_cpf(get_normalized_row_value(row, "CPF"))
     matricula = only_digits(get_normalized_row_value(row, "MATRICULA"))
     nome = normalize_upper(get_normalized_row_value(row, "NOME", "NAME"))
-    tipo_servico_servidor = normalize_upper(get_normalized_row_value(row, "TIPO SERVICO (SERVIDOR)", "TIPO SERVIÇO (SERVIDOR)"))
-    servico_servidor = normalize_upper(get_normalized_row_value(row, "SERVICO (SERVIDOR)", "SERVIÇO (SERVIDOR)", "SERVICO"))
+    tipo_servico_servidor = normalize_upper(get_normalized_row_value(row, "TIPO SERVICO (SERVIDOR)", "TIPO SERVIÃ‡O (SERVIDOR)"))
+    servico_servidor = normalize_upper(get_normalized_row_value(row, "SERVICO (SERVIDOR)", "SERVIÃ‡O (SERVIDOR)", "SERVICO"))
     margem_disponivel = parse_money(
-        get_normalized_row_value(row, "MARGEM DISPONIVEL (R$)", "MARGEM DISPONIVEL", "MARGEM DISPONÍVEL (R$)", "VL MARGEM")
+        get_normalized_row_value(row, "MARGEM DISPONIVEL (R$)", "MARGEM DISPONIVEL", "MARGEM DISPONÃVEL (R$)", "VL MARGEM")
     )
     margem_total = parse_money(get_normalized_row_value(row, "MARGEM TOTAL (R$)", "MARGEM TOTAL", "VL-RMI"))
     entidade = normalize_upper(get_normalized_row_value(row, "ENTIDADE"))
     cbo_titulo = normalize_upper(get_normalized_row_value(row, "CBO_TITULO", "CBO TITULO", "CARGO", "CARGO_FUNCAO", "CARGO/FUNCAO"))
-    consignataria = normalize_upper(get_normalized_row_value(row, "CONSIGNATARIA", "CONSIGNATÁRIA"))
-    situacao = normalize_upper(get_normalized_row_value(row, "SITUACAO", "SITUAÇÃO"))
+    consignataria = normalize_upper(get_normalized_row_value(row, "CONSIGNATARIA", "CONSIGNATÃRIA"))
+    situacao = normalize_upper(get_normalized_row_value(row, "SITUACAO", "SITUAÃ‡ÃƒO"))
     ade = only_digits(get_normalized_row_value(row, "ADE"))
-    servico_consignataria = normalize_upper(get_normalized_row_value(row, "SERVICO (CONSIGNATARIA)", "SERVIÇO (CONSIGNATÁRIA)"))
-    prestacoes = parse_int(get_normalized_row_value(row, "PRESTACOES", "PRESTAÇÕES"))
+    servico_consignataria = normalize_upper(get_normalized_row_value(row, "SERVICO (CONSIGNATARIA)", "SERVIÃ‡O (CONSIGNATÃRIA)"))
+    prestacoes = parse_int(get_normalized_row_value(row, "PRESTACOES", "PRESTAÃ‡Ã•ES"))
     pagas = parse_int(get_normalized_row_value(row, "PAGAS"))
     valor = parse_money(get_normalized_row_value(row, "VALOR"))
     deferimento = normalize_date_text(get_normalized_row_value(row, "DEFERIMENTO"))
-    quitacao = normalize_date_text(get_normalized_row_value(row, "QUITACAO", "QUITAÇÃO"))
-    ultimo_desconto = normalize_date_text(get_normalized_row_value(row, "ULTIMO DESCONTO", "ÚLTIMO DESCONTO"))
-    ultima_parcela = normalize_date_text(get_normalized_row_value(row, "ULTIMA PARCELA", "ÚLTIMA PARCELA"))
+    quitacao = normalize_date_text(get_normalized_row_value(row, "QUITACAO", "QUITAÃ‡ÃƒO"))
+    ultimo_desconto = normalize_date_text(get_normalized_row_value(row, "ULTIMO DESCONTO", "ÃšLTIMO DESCONTO"))
+    ultima_parcela = normalize_date_text(get_normalized_row_value(row, "ULTIMA PARCELA", "ÃšLTIMA PARCELA"))
     if not ade:
         row_fingerprint = "|".join(
             [
@@ -2838,8 +3102,6 @@ def import_public_campaign_updates(
     with tempfile.TemporaryDirectory() as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         with serialized_write():
-            contract_exists_cache: set[tuple[str, str, str, str, str]] = set()
-            occurrence_cache: dict[tuple[str, str], list[ClientOccurrence]] = {}
             for file_path in files:
                 if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                     continue
@@ -2867,21 +3129,18 @@ def import_public_campaign_updates(
                     seen_contract_keys.add(contract_key)
                     normalized_rows.append(normalized)
                     summary.rows_imported += 1
-                    if contract_key not in contract_exists_cache:
-                        exists = session.scalar(
-                            select(PublicCampaignUpdate.id)
-                            .where(
-                                PublicCampaignUpdate.cpf == cpf,
-                                PublicCampaignUpdate.matricula == str(normalized.get("matricula") or ""),
-                                PublicCampaignUpdate.ade == ade,
-                                PublicCampaignUpdate.fonte == normalized_source,
-                                PublicCampaignUpdate.arquivo_origem == file_path.name,
-                            )
-                            .limit(1)
+                    exists = session.scalar(
+                        select(func.count())
+                        .select_from(PublicCampaignUpdate)
+                        .where(
+                            PublicCampaignUpdate.cpf == cpf,
+                            PublicCampaignUpdate.matricula == str(normalized.get("matricula") or ""),
+                            PublicCampaignUpdate.ade == ade,
+                            PublicCampaignUpdate.fonte == normalized_source,
+                            PublicCampaignUpdate.arquivo_origem == file_path.name,
                         )
-                        if exists is not None:
-                            contract_exists_cache.add(contract_key)
-                    if contract_key not in contract_exists_cache:
+                    )
+                    if not exists:
                         session.add(
                             PublicCampaignUpdate(
                                 base_segment=normalized_segment,
@@ -2907,21 +3166,16 @@ def import_public_campaign_updates(
                                 importado_por=imported_by or "operador",
                             )
                         )
-                        contract_exists_cache.add(contract_key)
                         summary.contracts_saved += 1
 
                 aggregates_by_cpf = build_public_campaign_aggregates(normalized_rows)
                 for cpf, options in aggregates_by_cpf.items():
-                    cache_key = (cpf, normalized_segment)
-                    occurrences = occurrence_cache.get(cache_key)
-                    if occurrences is None:
-                        occurrences = session.execute(
-                            select(ClientOccurrence).where(
-                                ClientOccurrence.cpf == cpf,
-                                ClientOccurrence.base_segment == normalized_segment,
-                            )
-                        ).scalars().all()
-                        occurrence_cache[cache_key] = occurrences
+                    occurrences = session.execute(
+                        select(ClientOccurrence).where(
+                            ClientOccurrence.cpf == cpf,
+                            ClientOccurrence.base_segment == normalized_segment,
+                        )
+                    ).scalars().all()
                     if not occurrences:
                         summary.skipped_not_found += 1
                         continue
@@ -2970,10 +3224,6 @@ def import_phone_enrichments(
     with tempfile.TemporaryDirectory() as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         with serialized_write():
-            occurrences_cache: dict[str, list[ClientOccurrence]] = {}
-            client_cache: dict[str, Client | None] = {}
-            import_item_cache: set[tuple[str, str, str]] = set()
-            phone_exists_cache: set[tuple[str, str, str]] = set()
             for file_path in files:
                 if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                     continue
@@ -3034,15 +3284,8 @@ def import_phone_enrichments(
                         summary.skipped_without_phone += 1
                         continue
 
-                    occurrences = occurrences_cache.get(cpf)
-                    if occurrences is None:
-                        occurrences = session.execute(select(ClientOccurrence).where(ClientOccurrence.cpf == cpf)).scalars().all()
-                        occurrences_cache[cpf] = occurrences
-                    if cpf in client_cache:
-                        client = client_cache[cpf]
-                    else:
-                        client = session.get(Client, cpf)
-                        client_cache[cpf] = client
+                    occurrences = session.execute(select(ClientOccurrence).where(ClientOccurrence.cpf == cpf)).scalars().all()
+                    client = session.get(Client, cpf)
                     if client is None and occurrences:
                         seed = occurrences[0]
                         client = Client(
@@ -3058,27 +3301,22 @@ def import_phone_enrichments(
                         )
                         session.add(client)
                         session.flush()
-                        client_cache[cpf] = client
                     if client is None:
                         summary.skipped_not_found += 1
                         continue
 
                     summary.clients_matched += 1
                     affected_cpfs.add(cpf)
-                    import_key = (cpf, file_path.name, source_label)
-                    if import_key not in import_item_cache:
-                        import_item_exists = session.scalar(
-                            select(EnrichmentImportItem.id)
-                            .where(
-                                EnrichmentImportItem.cpf == cpf,
-                                EnrichmentImportItem.arquivo_origem == file_path.name,
-                                EnrichmentImportItem.fonte == source_label,
-                            )
-                            .limit(1)
+                    import_item_exists = session.scalar(
+                        select(func.count())
+                        .select_from(EnrichmentImportItem)
+                        .where(
+                            EnrichmentImportItem.cpf == cpf,
+                            EnrichmentImportItem.arquivo_origem == file_path.name,
+                            EnrichmentImportItem.fonte == source_label,
                         )
-                        if import_item_exists is not None:
-                            import_item_cache.add(import_key)
-                    if import_key not in import_item_cache:
+                    )
+                    if not import_item_exists:
                         session.add(
                             EnrichmentImportItem(
                                 cpf=cpf,
@@ -3087,16 +3325,23 @@ def import_phone_enrichments(
                                 importado_por=imported_by or "operador",
                             )
                         )
-                        import_item_cache.add(import_key)
                     previous_primary = client.melhor_telefone
                     existing_phones = [client.melhor_telefone]
                     if occurrences:
                         sample = occurrences[0]
                         existing_phones.extend([sample.telefone1, sample.telefone2, sample.telefone3])
+                    known_phone_set = {only_digits(phone) for phone in existing_phones if only_digits(phone)}
+                    incoming_phone_set = {only_digits(phone) for phone in phones if only_digits(phone)}
+                    has_new_incoming_phone = bool(incoming_phone_set - known_phone_set)
                     merged_phones = merge_phone_sequence(phones, existing_phones) if phones else merge_phone_sequence([], existing_phones)
                     if merged_phones:
                         client.melhor_telefone = merged_phones[0]
                         client.tem_telefone = True
+                    # Regra operacional: se o cliente estava bloqueado por "Nao e o cliente" e chegou
+                    # telefone novo no retorno, remover bloqueio automaticamente para voltar ao funil.
+                    if bool(client.do_not_call) and (client.do_not_call_reason or "") == "nao_e_o_cliente" and has_new_incoming_phone:
+                        client.do_not_call = False
+                        client.do_not_call_reason = ""
                     updated_any_phone = False
                     updated_any_data = False
                     for occurrence in occurrences:
@@ -3110,20 +3355,16 @@ def import_phone_enrichments(
                         summary.clients_updated += 1
 
                     for phone in phones:
-                        phone_key = (cpf, phone, source_label)
-                        if phone_key not in phone_exists_cache:
-                            exists = session.scalar(
-                                select(PhoneEnrichment.id)
-                                .where(
-                                    PhoneEnrichment.cpf == cpf,
-                                    PhoneEnrichment.telefone == phone,
-                                    PhoneEnrichment.fonte == source_label,
-                                )
-                                .limit(1)
+                        exists = session.scalar(
+                            select(func.count())
+                            .select_from(PhoneEnrichment)
+                            .where(
+                                PhoneEnrichment.cpf == cpf,
+                                PhoneEnrichment.telefone == phone,
+                                PhoneEnrichment.fonte == source_label,
                             )
-                            if exists is not None:
-                                phone_exists_cache.add(phone_key)
-                        if phone_key in phone_exists_cache:
+                        )
+                        if exists:
                             continue
                         session.add(
                             PhoneEnrichment(
@@ -3134,7 +3375,6 @@ def import_phone_enrichments(
                                 importado_por=imported_by or "operador",
                             )
                         )
-                        phone_exists_cache.add(phone_key)
                         summary.phones_added += 1
 
             if affected_cpfs:
