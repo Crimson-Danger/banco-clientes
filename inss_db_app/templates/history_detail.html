@@ -1,8 +1,5 @@
 {% extends "base.html" %}
 {% block content %}
-{% if batch.status == "PROCESSANDO" %}
-<meta http-equiv="refresh" content="5">
-{% endif %}
 <section class="dashboard-grid two-columns">
     <div class="card stat-box">
         <span>Referencia</span>
@@ -36,7 +33,13 @@
 {% if batch.status == "PROCESSANDO" %}
 <section class="card feedback-card feedback-card--info">
     <h2>Importacao em andamento</h2>
-    <p class="muted">Essa tela atualiza sozinha a cada 5 segundos.</p>
+    <p class="muted">Atualize manualmente quando precisar acompanhar o progresso.</p>
+    <div class="top-gap">
+        <a href="/history/{{ batch.id }}" class="top-action inline">Atualizar agora</a>
+        <form method="post" action="/history/{{ batch.id }}/cancel" onsubmit="return confirm('Cancelar o lote {{ batch.id }} em execucao?');">
+            <button type="submit" class="danger-button">Cancelar lote</button>
+        </form>
+    </div>
 </section>
 {% endif %}
 

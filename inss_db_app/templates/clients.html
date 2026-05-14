@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
 <section class="consult-shell">
     {% if message %}
@@ -93,7 +93,7 @@
 {% if has_active_lookup %}
 <section class="consult-grid">
     <article class="card consult-card consult-results">
-        <details class="consult-results-toggle" {% if result_count and result_count <= 5 %}open{% endif %}>
+        <details class="consult-results-toggle">
             <summary class="consult-card-head consult-card-summary">
                 <div>
                     <h3>Ocorrencias Encontradas</h3>
@@ -110,16 +110,19 @@
                     <table class="consult-table">
                         <thead>
                             {% if selected_base_segment == "INSS" %}
-                            <tr><th>Nome</th><th>CPF</th><th>Segmento</th><th>Telefone</th><th>Data Nasc.</th><th>Idade</th><th>DDB</th><th>Beneficio</th><th>Margem</th><th>Margem Disponivel</th></tr>
+                            <tr><th>Sel.</th><th>Nome</th><th>CPF</th><th>Segmento</th><th>Telefone</th><th>Data Nasc.</th><th>Idade</th><th>DDB</th><th>Beneficio</th><th>Margem</th><th>Margem Disponivel</th></tr>
+                            {% elif selected_base_segment == "CREFAZ" %}
+                            <tr><th>Nome</th><th>CPF</th><th>Telefone</th><th>NÂº Cliente</th><th>Conta Contrato</th><th>NÂº InstalaÃ§Ã£o</th><th>Cidade</th><th>UF</th></tr>
                             {% else %}
-                            <tr><th>Nome</th><th>CPF</th><th>Telefone</th><th>Idade</th><th>Matricula</th><th>Servico</th><th>Situacao</th><th>PIS</th><th>Entidade</th><th>CBO</th><th>Salario</th><th>Margem</th><th>Margem Total</th><th>Margem Liquida</th><th>Margem Bruta</th><th>Margem Utilizada</th></tr>
+                            <tr><th>Sel.</th><th>Nome</th><th>CPF</th><th>Telefone</th><th>Idade</th><th>Matricula</th><th>Servico</th><th>Situacao</th><th>PIS</th><th>Entidade</th><th>CBO</th><th>Salario</th><th>Margem</th><th>Margem Total</th><th>Margem Liquida</th><th>Margem Bruta</th><th>Margem Utilizada</th></tr>
                             {% endif %}
                         </thead>
                         <tbody>
                         {% for row in results %}
                             {% if selected_base_segment == "INSS" %}
                             <tr>
-                                <td><a href="/clients/{{ row.cpf }}/benefits" class="inline-link">{{ row.nome }}</a></td>
+                                <td><input type="radio" class="consult-result-radio" name="result_select" data-target="/clients/{{ row.cpf }}" {% if highlight and highlight.cpf == row.cpf %}checked{% endif %}></td>
+                                <td><a href="/clients/{{ row.cpf }}" class="inline-link consult-result-link">{{ row.nome }}</a></td>
                                 <td>{{ row.cpf }}</td>
                                 <td>{{ row.base_segment }}</td>
                                 <td>{{ row.telefone | phone_br }}</td>
@@ -130,9 +133,22 @@
                                 <td>{{ row.vl_rmi | brl }}</td>
                                 <td>{{ row.vl_margem | brl }}</td>
                             </tr>
+                            {% elif selected_base_segment == "CREFAZ" %}
+                            <tr>
+                                <td><input type="radio" class="consult-result-radio" name="result_select" data-target="/clients/{{ row.cpf }}" {% if highlight and highlight.cpf == row.cpf %}checked{% endif %}></td>
+                                <td><a href="/clients/{{ row.cpf }}" class="inline-link consult-result-link">{{ row.nome }}</a></td>
+                                <td>{{ row.cpf_original or row.cpf }}</td>
+                                <td>{{ row.telefone | phone_br }}</td>
+                                <td>{{ row.numero_cliente or '-' }}</td>
+                                <td>{{ row.conta_contrato or '-' }}</td>
+                                <td>{{ row.numero_instalacao or '-' }}</td>
+                                <td>{{ row.cidade or '-' }}</td>
+                                <td>{{ row.uf or '-' }}</td>
+                            </tr>
                             {% else %}
                             <tr>
-                                <td><a href="/clients/{{ row.cpf }}" class="inline-link">{{ row.nome }}</a></td>
+                                <td><input type="radio" class="consult-result-radio" name="result_select" data-target="/clients/{{ row.cpf }}" {% if highlight and highlight.cpf == row.cpf %}checked{% endif %}></td>
+                                <td><a href="/clients/{{ row.cpf }}" class="inline-link consult-result-link">{{ row.nome }}</a></td>
                                 <td>{{ row.cpf }}</td>
                                 <td>{{ row.telefone | phone_br }}</td>
                                 <td>{{ row.idade if row.idade is not none else '-' }}</td>
@@ -151,7 +167,7 @@
                             </tr>
                             {% endif %}
                         {% else %}
-                            <tr><td colspan="{% if selected_base_segment == 'INSS' %}10{% else %}16{% endif %}">Nenhum resultado.</td></tr>
+                            <tr><td colspan="{% if selected_base_segment == 'INSS' %}11{% elif selected_base_segment == 'CREFAZ' %}9{% else %}17{% endif %}">Nenhum resultado.</td></tr>
                         {% endfor %}
                         </tbody>
                     </table>
@@ -175,46 +191,6 @@
 </section>
 {% endif %}
 
-{% if selected_base_segment == "INSS" and inss_benefit_choices|length > 1 %}
-<section class="consult-grid">
-    <article class="card consult-card consult-results">
-        <div class="consult-card-head">
-            <h3>Selecionar Beneficio</h3>
-            <span class="consult-icon">#</span>
-        </div>
-        <div class="consult-results-body">
-            <div class="consult-results-note">
-                <strong>Mais de um beneficio encontrado para este CPF</strong>
-                <span>Escolha abaixo qual registro voce quer consultar para carregar os dados e a simulacao.</span>
-            </div>
-            <div class="consult-table-wrap">
-                <table class="consult-table">
-                    <thead>
-                        <tr><th>Beneficio</th><th>Especie</th><th>Significado</th><th>DDB</th><th>Referencia</th><th>Acao</th></tr>
-                    </thead>
-                    <tbody>
-                        {% for item in inss_benefit_choices %}
-                        <tr>
-                            <td>{{ item.benefit }}</td>
-                            <td>{{ item.species }}</td>
-                            <td>{{ item.species_meaning or "-" }}</td>
-                            <td>{{ item.ddb }}</td>
-                            <td>{{ item.reference }}</td>
-                            <td>
-                                <a class="consult-action inline" href="/clients?{{ selection_query }}&selected_occurrence_id={{ item.occurrence_id }}">
-                                    Consultar
-                                </a>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </article>
-</section>
-{% endif %}
-
 <section class="consult-secondary-grid">
     <article class="card consult-card consult-profile">
         <div class="consult-card-head">
@@ -222,9 +198,17 @@
             <span class="consult-icon">*</span>
         </div>
         {% if highlight %}
+        {% if selected_base_segment == "INSS" %}
+        <div class="profile-kpi-strip">
+            <div class="profile-kpi"><span>Telefone</span><strong>{{ highlight.telefone | phone_br }}</strong></div>
+            <div class="profile-kpi"><span>Beneficio</span><strong>{{ highlight.nu_nb or 'Nao informado' }}</strong></div>
+            <div class="profile-kpi"><span>Margem Disponivel</span><strong>{{ highlight.vl_margem | brl }}</strong></div>
+            <div class="profile-kpi"><span>DDB</span><strong>{{ highlight.ddb }}</strong></div>
+        </div>
+        {% endif %}
         <div class="profile-lines">
             <p><strong>Nome:</strong> {{ highlight.nome }}</p>
-            <p><strong>CPF:</strong> {{ highlight.cpf }}</p>
+            <p><strong>CPF:</strong> {% if selected_base_segment == "CREFAZ" %}{{ highlight.cpf_original or highlight.cpf }}{% else %}{{ highlight.cpf }}{% endif %}</p>
             <p><strong>Segmento:</strong> {{ highlight.base_segment }}</p>
             <p><strong>Telefone:</strong> {{ highlight.telefone | phone_br }}</p>
             <p><strong>Data Nasc.:</strong> {{ highlight.dt_nasc or 'Nao informado' }}</p>
@@ -242,31 +226,52 @@
             <p><strong>Nome da mae:</strong> {{ highlight.nome_mae or 'Nao informado' }}</p>
             <p><strong>Celular 1:</strong> {{ highlight.telefone | phone_br }}</p>
             <p><strong>Celular 2:</strong> {{ highlight.telefone2 | phone_br }}</p>
+            <p><strong>NÂº do cliente:</strong> {{ highlight.numero_cliente or 'Nao informado' }}</p>
+            <p><strong>Conta contrato:</strong> {{ highlight.conta_contrato or 'Nao informado' }}</p>
+            <p><strong>Numero instalaÃ§Ã£o:</strong> {{ highlight.numero_instalacao or 'Nao informado' }}</p>
             <p><strong>Cargo / funcao:</strong> {{ highlight.cargo_funcao or 'Nao informado' }}</p>
             <p><strong>Salario:</strong> {{ highlight.salario | brl }}</p>
             <p><strong>UF:</strong> {{ highlight.uf or 'Nao informado' }}</p>
             {% endif %}
         </div>
-        <p>
-            <a
-                href="{% if selected_base_segment == 'INSS' %}/clients/{{ highlight.cpf }}/benefits{% else %}/clients/{{ highlight.cpf }}{% endif %}"
-                class="inline-link"
-            >
-                Abrir tela completa do cliente
-            </a>
-        </p>
-        {% elif selected_base_segment == "INSS" and inss_benefit_choices|length > 1 %}
-        <p class="muted">Selecione um beneficio acima para carregar os dados principais e a area de simulacao.</p>
+        <p><a href="/clients/{{ highlight.cpf }}" class="inline-link">Abrir tela completa do cliente</a></p>
         {% else %}
         <p class="muted">Nenhum cliente localizado com os filtros atuais.</p>
         {% endif %}
     </article>
 
+    {% if selected_base_segment == "CREFAZ" %}
+    <article class="card consult-card consult-links-card consult-crefaz-related-card">
+        <div class="consult-card-head">
+            <h3 class="crefaz-related-title">Outras Contas Do Cliente</h3>
+            <span class="consult-icon">+</span>
+        </div>
+        {% if crefaz_related_accounts %}
+        <div class="consult-link-list">
+            {% for row in crefaz_related_accounts %}
+            <div class="consult-link-item">
+                <div class="consult-link-main">
+                    <strong>NÃ‚Âº cliente: {{ row.numero_cliente or 'Nao informado' }}</strong>
+                    <span>Conta: {{ row.conta_contrato or 'Nao informado' }} | Instalacao: {{ row.numero_instalacao or 'Nao informado' }}</span>
+                </div>
+                <div class="consult-link-meta">
+                    <span>{{ row.cidade or '-' }}/{{ row.uf or '-' }}</span>
+                    <strong>{{ row.telefone | phone_br }}</strong>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="muted">Nenhuma outra conta encontrada para este CPF/CNPJ.</p>
+        {% endif %}
+    </article>
+    {% endif %}
+
     {% if selected_base_segment == "INSS" %}
     <article
         class="card consult-card consult-profile consult-quick-actions-card"
         data-quick-name="{% if highlight %}{{ highlight.nome }}{% endif %}"
-        data-quick-cpf="{% if highlight %}{{ highlight.cpf }}{% endif %}"
+        data-quick-cpf="{% if highlight %}{% if selected_base_segment == 'CREFAZ' %}{{ highlight.cpf_original or highlight.cpf }}{% else %}{{ highlight.cpf }}{% endif %}{% endif %}"
         data-quick-phone="{% if highlight %}{{ highlight.telefone or highlight.telefone1 or highlight.telefone2 or highlight.telefone3 or '' }}{% endif %}"
     >
         <div class="consult-card-head">
@@ -274,25 +279,31 @@
             <span class="consult-icon">+</span>
         </div>
         {% if highlight %}
-        <form method="post" action="/clients/{{ highlight.cpf }}/do-not-call" class="consult-quick-dnc-form">
+        <form method="post" action="/clients/{{ highlight.cpf }}/do-not-call" class="consult-quick-dnc-form" data-dnc-form>
             <input type="hidden" name="enabled" value="{% if highlight.do_not_call %}false{% else %}true{% endif %}">
             <input type="hidden" name="return_url" value="{{ current_query_url }}">
-            <button type="submit" class="consult-action {% if highlight.do_not_call %}danger-button{% else %}ghost{% endif %} inline">
-                {% if highlight.do_not_call %}Remover bloqueio NAO LIGAR{% else %}Marcar como NAO LIGAR{% endif %}
+            <input type="hidden" name="dnc_reason" value="{{ highlight.do_not_call_reason or '' }}" data-dnc-reason-input>
+            <button type="submit" class="consult-action danger-button inline" data-dnc-button>
+                {% if highlight.do_not_call %}Remover NAO LIGAR{% else %}Marcar NAO LIGAR{% endif %}
             </button>
-            <small class="muted">
+            <small class="muted" data-dnc-status>
                 Status atual:
                 {% if highlight.do_not_call %}
-                <strong>NAO LIGAR</strong> (nao sai em lista de contato)
+                <strong>NAO LIGAR</strong> (oculto da lista){% if highlight.do_not_call_reason == "nao_e_o_cliente" %} - Nao e o cliente{% elif highlight.do_not_call_reason == "cliente_ja_fechou_conosco" %} - Cliente ja fechou conosco{% elif highlight.do_not_call_reason == "nao_quer_mais_receber_ligacao" %} - Nao quer mais receber ligacao{% endif %}
                 {% else %}
                 <strong>Liberado para contato</strong>
                 {% endif %}
             </small>
         </form>
         <div class="consult-link-list consult-quick-actions-grid">
-            <a class="consult-link-item consult-quick-whatsapp" href="#" target="_blank" rel="noopener">
+            <a class="consult-link-item consult-link-item--primary consult-quick-whatsapp" href="#" target="_blank" rel="noopener">
                 <div class="consult-link-main">
-                    <strong>WhatsApp</strong>
+                    <strong class="consult-quick-whatsapp-title">
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path fill="currentColor" d="M19.05 4.94A9.86 9.86 0 0 0 12.03 2C6.57 2 2.13 6.43 2.13 11.9c0 1.75.46 3.46 1.33 4.97L2 22l5.3-1.39a9.9 9.9 0 0 0 4.73 1.2h.01c5.46 0 9.9-4.43 9.9-9.9a9.83 9.83 0 0 0-2.89-6.97Zm-7.02 15.2h-.01a8.23 8.23 0 0 1-4.18-1.15l-.3-.18-3.15.83.84-3.08-.2-.31a8.21 8.21 0 0 1-1.27-4.35c0-4.54 3.7-8.24 8.25-8.24a8.18 8.18 0 0 1 5.84 2.42 8.18 8.18 0 0 1 2.4 5.82c0 4.55-3.7 8.24-8.22 8.24Zm4.52-6.17c-.25-.13-1.47-.72-1.7-.8-.23-.08-.4-.13-.57.13-.17.25-.65.8-.8.97-.15.17-.3.19-.55.06-.25-.13-1.06-.39-2.02-1.25-.74-.66-1.24-1.47-1.38-1.72-.15-.25-.02-.38.11-.51.12-.12.25-.3.38-.44.13-.15.17-.25.25-.42.08-.17.04-.32-.02-.44-.06-.13-.57-1.37-.78-1.87-.2-.49-.41-.42-.57-.43h-.49c-.17 0-.44.06-.67.32-.23.25-.88.86-.88 2.1 0 1.24.9 2.44 1.03 2.61.13.17 1.76 2.68 4.27 3.75.6.26 1.07.41 1.43.53.6.19 1.15.16 1.58.1.48-.07 1.47-.6 1.68-1.18.21-.58.21-1.08.15-1.18-.06-.1-.23-.16-.48-.28Z"/>
+                        </svg>
+                        WhatsApp
+                    </strong>
                     <span>Abrir conversa com o cliente</span>
                 </div>
             </a>
@@ -309,8 +320,6 @@
                 </div>
             </button>
         </div>
-        {% elif inss_benefit_choices|length > 1 %}
-        <p class="muted">Acoes rapidas ficam disponiveis depois da selecao do beneficio.</p>
         {% else %}
         <p class="muted">Nenhum cliente selecionado.</p>
         {% endif %}
@@ -365,9 +374,8 @@
         {% endif %}
     </article>
     {% endif %}
-
 </section>
-{% if selected_base_segment == "INSS" and (highlight or inss_benefit_choices|length <= 1) %}
+{% if selected_base_segment == "INSS" %}
 <section class="consult-simulator-section">
     <article class="card consult-card consult-simulator-card consult-simulator-card--full">
         <div class="consult-card-head">
@@ -514,32 +522,32 @@
                                 <small>Defina operacao, banco e prazo</small>
                             </div>
                         <div class="form-grid consult-card-slot-grid">
-                            <label class="consult-card-op-field">Operacao
+                            <label>Operacao
                                 <select class="consult-sim-input consult-card-op" data-card-slot-input="1">
                                     <option value="sem_saque">Sem saque</option>
                                     <option value="com_saque">Com saque</option>
                                 </select>
                             </label>
-                            <label class="consult-bank-field consult-card-bank-field">Banco
+                            <label class="consult-bank-field">Banco
                                 <div class="consult-bank-row-inline">
                                     <select class="consult-sim-input consult-card-bank" data-card-slot-input="1"></select>
                                     <span class="consult-bank-logo-preview" data-bank-logo-slot="1"></span>
                                 </div>
                             </label>
-                            <label class="consult-card-table-field">Tabela
+                            <label>Tabela
                                 <select class="consult-sim-input consult-card-table" data-card-slot-input="1">
                                     <option value="">Selecionar tabela</option>
                                 </select>
                             </label>
-                            <label class="consult-card-prazo-field">Prazo
+                            <label>Prazo
                                 <select class="consult-sim-input consult-card-prazo" data-card-slot-input="1">
                                     <option value="">Selecionar prazo</option>
                                 </select>
                             </label>
-                            <label class="consult-card-taxa-field">Taxa (% a.m.)
+                            <label>Taxa (% a.m.)
                                 <input type="text" class="consult-sim-input consult-card-taxa" data-card-slot-input="1" readonly>
                             </label>
-                            <label class="consult-card-margin-field">Margem usada
+                            <label>Margem usada
                                 <input type="text" class="consult-sim-input consult-card-margin" data-card-slot-input="1" readonly>
                             </label>
                         </div>
@@ -583,32 +591,32 @@
                                 <small>Defina operacao, banco e prazo</small>
                             </div>
                         <div class="form-grid consult-card-slot-grid">
-                            <label class="consult-card-op-field">Operacao
+                            <label>Operacao
                                 <select class="consult-sim-input consult-card-op" data-card-slot-input="2">
                                     <option value="sem_saque">Sem saque</option>
                                     <option value="com_saque">Com saque</option>
                                 </select>
                             </label>
-                            <label class="consult-bank-field consult-card-bank-field">Banco
+                            <label class="consult-bank-field">Banco
                                 <div class="consult-bank-row-inline">
                                     <select class="consult-sim-input consult-card-bank" data-card-slot-input="2"></select>
                                     <span class="consult-bank-logo-preview" data-bank-logo-slot="2"></span>
                                 </div>
                             </label>
-                            <label class="consult-card-table-field">Tabela
+                            <label>Tabela
                                 <select class="consult-sim-input consult-card-table" data-card-slot-input="2">
                                     <option value="">Selecionar tabela</option>
                                 </select>
                             </label>
-                            <label class="consult-card-prazo-field">Prazo
+                            <label>Prazo
                                 <select class="consult-sim-input consult-card-prazo" data-card-slot-input="2">
                                     <option value="">Selecionar prazo</option>
                                 </select>
                             </label>
-                            <label class="consult-card-taxa-field">Taxa (% a.m.)
+                            <label>Taxa (% a.m.)
                                 <input type="text" class="consult-sim-input consult-card-taxa" data-card-slot-input="2" readonly>
                             </label>
-                            <label class="consult-card-margin-field">Margem usada
+                            <label>Margem usada
                                 <input type="text" class="consult-sim-input consult-card-margin" data-card-slot-input="2" readonly>
                             </label>
                         </div>
@@ -676,7 +684,7 @@
                 <h3 id="consult-filter-drawer-title">Filtros avancados</h3>
                 <p class="muted">Use este painel apenas quando precisar segmentar melhor a lista.</p>
             </div>
-            <button type="button" class="consult-filter-drawer-close" data-filter-drawer-close aria-label="Fechar filtros">×</button>
+            <button type="button" class="consult-filter-drawer-close" data-filter-drawer-close aria-label="Fechar filtros">Ã—</button>
         </div>
         <form method="get" class="form-grid consult-filter-grid consult-filter-drawer-form">
             <input type="hidden" name="base_segment" value="{{ selected_base_segment }}">
@@ -1046,6 +1054,19 @@ document.addEventListener("DOMContentLoaded", function () {
         return String(value || "").replace(/\D+/g, "");
     }
 
+    function showToast(message) {
+        const node = document.getElementById("consultToast");
+        if (!node) {
+            return;
+        }
+        node.textContent = message;
+        node.classList.add("is-visible");
+        window.clearTimeout(showToast._timeoutId);
+        showToast._timeoutId = window.setTimeout(function () {
+            node.classList.remove("is-visible");
+        }, 1800);
+    }
+
     function setupQuickActions() {
         const card = document.querySelector(".consult-quick-actions-card");
         if (!card) {
@@ -1079,6 +1100,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 if (!cpf) return;
                 await copySimulationText(cpf);
                 copyCpf.querySelector("strong").textContent = "CPF copiado";
+                showToast("CPF copiado");
                 window.setTimeout(function () {
                     copyCpf.querySelector("strong").textContent = "Copiar CPF";
                 }, 1400);
@@ -1093,6 +1115,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 ].join("\n");
                 await copySimulationText(payload);
                 copySummary.querySelector("strong").textContent = "Resumo copiado";
+                showToast("Resumo copiado");
                 window.setTimeout(function () {
                     copySummary.querySelector("strong").textContent = "Copiar Resumo";
                 }, 1400);
@@ -1481,6 +1504,60 @@ document.addEventListener("DOMContentLoaded", function () {
 });
 </script>
 {% endif %}
+<div class="consult-toast" id="consultToast" role="status" aria-live="polite"></div>
+<div class="consult-modal-overlay" id="confirmModalOverlay" style="display:none;" aria-hidden="true">
+    <div class="consult-modal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle" aria-describedby="confirmModalMessage">
+        <h3 id="confirmModalTitle">Confirmacao</h3>
+        <p id="confirmModalMessage">Deseja continuar?</p>
+        <div id="confirmModalReasonWrap" style="display:none; margin-top: 10px;">
+            <label class="muted" for="confirmModalReason" style="display:block; margin-bottom: 6px;">Motivo</label>
+            <select id="confirmModalReason" style="display:block; width:100%;">
+                <option value="">Selecione</option>
+                <option value="nao_e_o_cliente">Nao e o cliente</option>
+                <option value="cliente_ja_fechou_conosco">Cliente ja fechou conosco</option>
+                <option value="nao_quer_mais_receber_ligacao">Nao quer mais receber ligacao</option>
+            </select>
+        </div>
+        <div class="consult-modal-actions">
+            <button type="button" class="consult-action ghost" id="confirmModalCancel" data-confirm-cancel>Cancelar</button>
+            <button type="button" class="consult-action danger-button" id="confirmModalOk" data-confirm-ok>Confirmar</button>
+        </div>
+    </div>
+</div>
+<style>
+.consult-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: grid;
+    place-items: center;
+    background: rgba(3, 10, 24, 0.72);
+    backdrop-filter: blur(3px);
+}
+.consult-modal {
+    width: min(92vw, 460px);
+    border-radius: 16px;
+    border: 1px solid rgba(123, 241, 255, 0.35);
+    background: linear-gradient(145deg, rgba(7, 18, 38, 0.98), rgba(8, 28, 44, 0.98));
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+    padding: 20px;
+}
+.consult-modal h3 {
+    margin: 0 0 10px;
+    font-size: 1.05rem;
+}
+.consult-modal p {
+    margin: 0;
+    color: rgba(227, 240, 255, 0.88);
+    line-height: 1.45;
+}
+.consult-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 18px;
+}
+</style>
 <script>
 document.addEventListener("DOMContentLoaded", function () {
     const filterDrawer = document.querySelector("[data-filter-drawer]");
@@ -1512,6 +1589,196 @@ document.addEventListener("DOMContentLoaded", function () {
             toggleFilterDrawer(false);
         }
     });
+
+    const radios = Array.from(document.querySelectorAll(".consult-result-radio"));
+    radios.forEach(function (radio) {
+        radio.addEventListener("change", function () {
+            if (radio.checked && radio.dataset.target) {
+                window.location.href = radio.dataset.target;
+            }
+        });
+    });
+
+    const quickCard = document.querySelector(".consult-quick-actions-card");
+    const confirmModalOverlay = document.getElementById("confirmModalOverlay");
+    const confirmModalMessage = document.getElementById("confirmModalMessage");
+    const confirmModalReasonWrap = document.getElementById("confirmModalReasonWrap");
+    const confirmModalReason = document.getElementById("confirmModalReason");
+    const confirmModalCancel = document.querySelector("[data-confirm-cancel]");
+    const confirmModalOk = document.querySelector("[data-confirm-ok]");
+    let confirmResolver = null;
+    let lastFocusedElement = null;
+    let confirmMode = "default";
+
+    function openConfirmModal(message, options) {
+        if (!confirmModalOverlay || !confirmModalMessage || !confirmModalCancel || !confirmModalOk) {
+            return Promise.resolve(window.confirm(message));
+        }
+        const modalOptions = options || {};
+        confirmMode = modalOptions.mode || "default";
+        confirmModalMessage.textContent = message;
+        if (confirmMode === "dnc_with_reason" && confirmModalReasonWrap && confirmModalReason) {
+            confirmModalReasonWrap.style.display = "block";
+            confirmModalReason.value = modalOptions.selectedReason || "";
+        } else if (confirmModalReasonWrap && confirmModalReason) {
+            confirmModalReasonWrap.style.display = "none";
+            confirmModalReason.value = "";
+        }
+        confirmModalOverlay.style.display = "grid";
+        confirmModalOverlay.setAttribute("aria-hidden", "false");
+        confirmModalOverlay.dataset.open = "true";
+        document.body.classList.add("drawer-open");
+        lastFocusedElement = document.activeElement;
+        if (confirmMode === "dnc_with_reason" && confirmModalReason) {
+            confirmModalReason.focus();
+        } else {
+            confirmModalCancel.focus();
+        }
+        return new Promise(function (resolve) {
+            confirmResolver = resolve;
+        });
+    }
+
+    function closeConfirmModal(confirmed) {
+        if (!confirmModalOverlay) {
+            return;
+        }
+        confirmModalOverlay.style.display = "none";
+        confirmModalOverlay.setAttribute("aria-hidden", "true");
+        delete confirmModalOverlay.dataset.open;
+        document.body.classList.remove("drawer-open");
+        if (typeof confirmResolver === "function") {
+            if (confirmed && confirmMode === "dnc_with_reason" && confirmModalReason) {
+                confirmResolver({ confirmed: true, reason: confirmModalReason.value || "" });
+            } else {
+                confirmResolver({ confirmed: Boolean(confirmed), reason: "" });
+            }
+            confirmResolver = null;
+        }
+        confirmMode = "default";
+        if (confirmModalReasonWrap && confirmModalReason) {
+            confirmModalReasonWrap.style.display = "none";
+            confirmModalReason.value = "";
+        }
+        if (lastFocusedElement && typeof lastFocusedElement.focus === "function") {
+            lastFocusedElement.focus();
+        }
+    }
+
+    if (confirmModalCancel) {
+        confirmModalCancel.addEventListener("click", function () {
+            closeConfirmModal(false);
+        });
+    }
+    if (confirmModalOk) {
+        confirmModalOk.addEventListener("click", function () {
+            closeConfirmModal(true);
+        });
+    }
+    if (confirmModalOverlay) {
+        confirmModalOverlay.addEventListener("click", function (event) {
+            if (event.target === confirmModalOverlay) {
+                closeConfirmModal(false);
+            }
+        });
+    }
+    document.addEventListener("keydown", function (event) {
+        if (!confirmModalOverlay || confirmModalOverlay.style.display === "none") {
+            return;
+        }
+        if (event.key === "Escape") {
+            event.preventDefault();
+            closeConfirmModal(false);
+        }
+        if (event.key === "Enter" && document.activeElement === confirmModalCancel) {
+            event.preventDefault();
+            closeConfirmModal(false);
+        }
+    });
+
+    if (quickCard) {
+        const dncForm = quickCard.querySelector("[data-dnc-form]");
+        const dncButton = quickCard.querySelector("[data-dnc-button]");
+        const dncStatus = quickCard.querySelector("[data-dnc-status]");
+        const copyCpf = quickCard.querySelector(".consult-quick-copy-cpf");
+        const whatsapp = quickCard.querySelector(".consult-quick-whatsapp");
+        if (dncForm && dncButton && dncStatus) {
+            const dncReasonInput = dncForm.querySelector("[data-dnc-reason-input]");
+            const reasonLabels = {
+                nao_e_o_cliente: "Nao e o cliente",
+                cliente_ja_fechou_conosco: "Cliente ja fechou conosco",
+                nao_quer_mais_receber_ligacao: "Nao quer mais receber ligacao",
+            };
+            dncForm.addEventListener("submit", async function (event) {
+                event.preventDefault();
+                const willBlock = dncForm.querySelector("input[name='enabled']").value === "true";
+                const confirmText = willBlock
+                    ? "Confirmar NAO LIGAR? O cliente sera ocultado da lista de contato."
+                    : "Remover NAO LIGAR? O cliente voltara para a lista de contato.";
+                const modalResult = willBlock
+                    ? await openConfirmModal(confirmText, { mode: "dnc_with_reason", selectedReason: dncReasonInput ? dncReasonInput.value : "" })
+                    : await openConfirmModal(confirmText);
+                if (!modalResult || !modalResult.confirmed) {
+                    return;
+                }
+                if (willBlock && dncReasonInput) {
+                    if (!modalResult.reason) {
+                        await openConfirmModal("Selecione o motivo para marcar NAO LIGAR.");
+                        return;
+                    }
+                    dncReasonInput.value = modalResult.reason;
+                }
+                if (!willBlock && dncReasonInput) {
+                    dncReasonInput.value = "";
+                }
+                const currentReason = dncReasonInput ? dncReasonInput.value : "";
+                if (willBlock && !currentReason) {
+                    return;
+                }
+                const payload = new URLSearchParams(new FormData(dncForm));
+                const response = await fetch(dncForm.action, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+                    body: payload.toString(),
+                });
+                if (!response.ok) {
+                    return;
+                }
+                dncForm.querySelector("input[name='enabled']").value = willBlock ? "false" : "true";
+                dncButton.textContent = willBlock ? "Remover NAO LIGAR" : "Marcar NAO LIGAR";
+                dncStatus.innerHTML = willBlock
+                    ? "Status atual: <strong>NAO LIGAR</strong> (oculto da lista)" + (currentReason ? " - " + (reasonLabels[currentReason] || "") : "")
+                    : "Status atual: <strong>Liberado para contato</strong>";
+            });
+        }
+
+        document.addEventListener("keydown", function (event) {
+            if (confirmModalOverlay && confirmModalOverlay.style.display !== "none") {
+                return;
+            }
+            if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) {
+                return;
+            }
+            const tag = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : "";
+            if (tag === "input" || tag === "select" || tag === "textarea") {
+                return;
+            }
+            const key = event.key.toLowerCase();
+            if (key === "w" && whatsapp && !whatsapp.classList.contains("is-disabled")) {
+                event.preventDefault();
+                whatsapp.click();
+            } else if (key === "c" && copyCpf) {
+                event.preventDefault();
+                copyCpf.click();
+            } else if (key === "n" && dncButton) {
+                event.preventDefault();
+                dncButton.click();
+            }
+        });
+    }
 });
 </script>
 {% endblock %}
+
+
+

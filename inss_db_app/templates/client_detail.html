@@ -169,6 +169,20 @@
                             {% endif %}
                         </strong>
                     </div>
+                    {% if segment.segment == "CREFAZ" %}
+                    <div class="client-view-info-item">
+                        <span>Nº do cliente</span>
+                        <strong>{{ segment.numero_cliente or "-" }}</strong>
+                    </div>
+                    <div class="client-view-info-item">
+                        <span>Conta contrato</span>
+                        <strong>{{ segment.conta_contrato or "-" }}</strong>
+                    </div>
+                    <div class="client-view-info-item">
+                        <span>Numero instalação</span>
+                        <strong>{{ segment.numero_instalacao or "-" }}</strong>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
 

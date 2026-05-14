@@ -36,7 +36,7 @@
                     <label>Usuario<input type="text" name="user_name" value="operador"></label>
                     <label>Origem logica<input type="text" name="origin_folder" value="upload_web"></label>
                 </div>
-                <p class="muted" id="reference_help">INSS usa referencia por competencia. Governo e Prefeitura usam layout/fonte da base e nao dependem de ano e mes para a importacao.</p>
+                <p class="muted" id="reference_help">INSS usa referencia por competencia. Crefaz usa layout de conta/instalacao e nao depende de especie. Governo e Prefeitura usam layout/fonte da base e nao dependem de ano e mes para a importacao.</p>
             </section>
 
             <section class="filter-block">
@@ -168,24 +168,26 @@ document.addEventListener("DOMContentLoaded", function () {
     const monthInput = document.querySelector("input[name='month']");
 
     function applySegmentVisibility() {
-        const isInss = (segmentSelect && segmentSelect.value === "INSS");
+        const segment = segmentSelect ? segmentSelect.value : "INSS";
+        const isInssLike = segment === "INSS";
+        const isPublic = segment === "GOVERNO" || segment === "PREFEITURA";
         inssFields.forEach(function (field) {
-            field.style.display = isInss ? "" : "none";
+            field.style.display = isInssLike ? "" : "none";
         });
         inssSections.forEach(function (section) {
-            section.style.display = isInss ? "" : "none";
+            section.style.display = isInssLike ? "" : "none";
         });
         if (publicUpdateSection) {
-            publicUpdateSection.style.display = isInss ? "none" : "";
+            publicUpdateSection.style.display = isPublic ? "" : "none";
         }
         if (publicUpdateSegment && segmentSelect) {
             publicUpdateSegment.value = segmentSelect.value;
         }
         if (yearInput) {
-            yearInput.required = isInss;
+            yearInput.required = isInssLike;
         }
         if (monthInput) {
-            monthInput.required = isInss;
+            monthInput.required = isInssLike;
         }
     }
 

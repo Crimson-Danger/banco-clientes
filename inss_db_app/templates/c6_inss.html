@@ -5,7 +5,7 @@
     <h2>Consignado Tradicional (INSS) - C6</h2>
     <p>Area de teste para simular e incluir proposta no endpoint tradicional.</p>
     {% if error %}
-    <p class="clt-alert"><strong>{{ error }}</strong></p>
+    <p class="clt-alert clt-alert-compact" title="{{ error }}"><strong>{{ error }}</strong></p>
     {% endif %}
     <ul>
         <li><code>POST /marketplace/proposal/simulation</code></li>
@@ -19,10 +19,10 @@
         <form method="post" action="/c6-inss" class="c6-form-grid">
             <div class="c6-section-title">Dados do Cliente</div>
             <div class="c6-compact-grid">
-                <div><label>CPF</label><input type="text" name="tax_identifier" value="{{ tax_identifier }}" required></div>
-                <div><label>Matricula</label><input type="text" name="enrollment" value="{{ enrollment }}" minlength="10" maxlength="10" required></div>
-                <div><label>Nascimento</label><input type="text" name="birth_date" value="{{ birth_date }}" placeholder="dd/mm/aaaa" required></div>
-                <div><label>Renda</label><input type="text" name="income_amount" value="{{ income_amount }}" class="money-br" required></div>
+                <div><label>CPF</label><input type="text" name="tax_identifier" id="tax_identifier" value="{{ tax_identifier }}" required></div>
+                <div><label>Beneficio</label><input type="text" name="enrollment" id="enrollment" value="{{ enrollment }}" minlength="10" maxlength="10" required></div>
+                <div><label>Nascimento</label><input type="text" name="birth_date" id="birth_date" value="{{ birth_date }}" placeholder="dd/mm/aaaa" required></div>
+                <div><label>Renda</label><input type="text" name="income_amount" id="income_amount" value="{{ income_amount }}" class="money-br" required></div>
             </div>
             <div class="c6-section-title">Dados da Simulacao</div>
             <div class="c6-compact-grid">
@@ -47,13 +47,20 @@
                     </select>
                 </div>
                 <div><label>Tipo operacao</label><input type="text" name="operation_type" value="{{ operation_type }}" required></div>
-                <div><label>Produto</label><input type="text" name="product_type_code" value="{{ product_type_code }}" required></div>
-                <div><label>Formalizacao</label><input type="text" name="formalization_subtype" value="{{ formalization_subtype }}" required></div>
-                <div><label>Promoter code</label><input type="text" name="promoter_code" value="{{ promoter_code }}" required></div>
-                <div><label>Covenant group</label><input type="text" name="covenant_group" value="{{ covenant_group }}" required></div>
-                <div><label>Public agency</label><input type="text" name="public_agency" value="{{ public_agency }}" required></div>
             </div>
-            <div class="clt-actions-right"><button type="submit">Enviar Simulacao INSS</button></div>
+            <details class="c6-advanced-config">
+                <summary>Configuracao avancada da API</summary>
+                <div class="c6-compact-grid">
+                    <div><label>Produto</label><input type="text" name="product_type_code" value="{{ product_type_code }}" required></div>
+                    <div><label>Formalizacao</label><input type="text" name="formalization_subtype" value="{{ formalization_subtype }}" required></div>
+                    <div><label>Promoter code</label><input type="text" name="promoter_code" value="{{ promoter_code }}" required></div>
+                    <div><label>Covenant group</label><input type="text" name="covenant_group" value="{{ covenant_group }}" required></div>
+                    <div><label>Public agency</label><input type="text" name="public_agency" value="{{ public_agency }}" required></div>
+                </div>
+            </details>
+            <div class="clt-actions-right">
+                <button type="submit" class="c6-submit-btn" data-loading-text="Enviando simulacao...">Enviar Simulacao INSS</button>
+            </div>
         </form>
     </article>
 </section>
@@ -64,20 +71,25 @@
     {% set valid_conditions = simulation_conditions | selectattr("is_valid") | list %}
     {% set invalid_conditions = simulation_conditions | rejectattr("is_valid") | list %}
     <div class="c6-result-kpis">
-        <div><span>HTTP</span><strong>{{ result.status_code }}</strong></div>
         <div><span>Ofertas validas</span><strong>{{ valid_conditions | length }}</strong></div>
+        <div><span>Melhor valor cliente</span><strong>{% if best_offer and best_offer.client_amount is not none %}R$ {{ "{:,.2f}".format(best_offer.client_amount).replace(",", "X").replace(".", ",").replace("X", ".") }}{% else %}-{% endif %}</strong></div>
         <div><span>Total retornado</span><strong>{{ simulation_conditions | length }}</strong></div>
+        <div><span>HTTP</span><strong>{{ result.status_code }}</strong></div>
     </div>
+    {% if api_status_note %}
+    <p class="c6-api-note">{{ api_status_note }}</p>
+    {% endif %}
     {% if valid_conditions %}
     <div class="c6-result-section-head">
         <h4>Ofertas disponiveis</h4>
-        <small>Ordenadas para selecao rapida</small>
+        <small>Ordenadas por maior valor cliente e menor taxa</small>
     </div>
     <div class="table-wrap c6-result-table-wrap">
         <table class="c6-result-table">
             <thead>
                 <tr>
                     <th>Status</th>
+                    <th>Destaque</th>
                     <th>Convenio</th>
                     <th>Parcela</th>
                     <th>Prazo</th>
@@ -89,8 +101,9 @@
             </thead>
             <tbody>
                 {% for row in valid_conditions %}
-                <tr class="is-valid">
+                <tr class="is-valid{% if loop.first %} c6-best-offer-row{% endif %}">
                     <td><span class="c6-status-badge valid">Valida</span></td>
+                    <td>{% if row.highlight_badge %}<span class="c6-offer-badge">{{ row.highlight_badge }}</span>{% else %}-{% endif %}</td>
                     <td>{{ row.covenant_code }} - {{ row.covenant_description }}</td>
                     <td>{% if row.installment_amount is not none %}R$ {{ "{:,.2f}".format(row.installment_amount).replace(",", "X").replace(".", ",").replace("X", ".") }}{% else %}-{% endif %}</td>
                     <td>{{ row.installment_quantity }}</td>
@@ -100,6 +113,7 @@
                     <td class="c6-action-cell">
                         {% if row.select_url %}
                         <a class="top-action c6-select-btn" href="{{ row.select_url }}">Selecionar</a>
+                        <button type="button" class="consult-action ghost inline c6-copy-offer-btn" data-copy-offer="Convenio: {{ row.covenant_code }} - {{ row.covenant_description }}&#10;Parcela: {% if row.installment_amount is not none %}R$ {{ '{:,.2f}'.format(row.installment_amount).replace(',', 'X').replace('.', ',').replace('X', '.') }}{% else %}-{% endif %}&#10;Prazo: {{ row.installment_quantity }}&#10;Valor cliente: {% if row.client_amount is not none %}R$ {{ '{:,.2f}'.format(row.client_amount).replace(',', 'X').replace('.', ',').replace('X', '.') }}{% else %}-{% endif %}&#10;Taxa a.m.: {{ row.monthly_customer_rate if row.monthly_customer_rate is not none else '-' }}">Copiar proposta</button>
                         {% else %}
                         -
                         {% endif %}
@@ -141,6 +155,7 @@
     {% endif %}
 </section>
 {% endif %}
+<div class="consult-toast" id="c6Toast" role="status" aria-live="polite"></div>
 <script>
     (function () {
         function formatMoneyBr(rawValue) {
@@ -179,6 +194,99 @@
             simulationType.addEventListener("change", applySimulationLayout);
             applySimulationLayout();
         }
+
+        var cpfInput = document.getElementById("tax_identifier");
+        var enrollmentInput = document.getElementById("enrollment");
+        var birthDateInput = document.getElementById("birth_date");
+        var incomeInput = document.getElementById("income_amount");
+        var cpfLookupTimer = null;
+
+        function digitsOnly(value) {
+            return String(value || "").replace(/\D/g, "");
+        }
+
+        function fillIncomeFromNumber(value) {
+            if (!incomeInput) return;
+            var numericValue = Number(value || 0);
+            if (!Number.isFinite(numericValue) || numericValue <= 0) return;
+            incomeInput.value = numericValue.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        async function loadLatestClientByCpf() {
+            if (!cpfInput) return;
+            var cpf = digitsOnly(cpfInput.value);
+            if (cpf.length !== 11) {
+                return;
+            }
+            try {
+                var response = await fetch("/api/c6/inss-client/" + cpf + "/latest", { headers: { "Accept": "application/json" } });
+                if (!response.ok) {
+                    return;
+                }
+                var payload = await response.json();
+                if (enrollmentInput && payload.benefit) {
+                    enrollmentInput.value = payload.benefit;
+                }
+                if (birthDateInput && payload.birth_date) {
+                    birthDateInput.value = payload.birth_date;
+                }
+                fillIncomeFromNumber(payload.income_amount);
+                showToast("Dados do cliente carregados");
+            } catch (_error) {
+                // Mantem preenchimento manual quando nao houver retorno
+            }
+        }
+
+        if (cpfInput) {
+            cpfInput.addEventListener("input", function () {
+                window.clearTimeout(cpfLookupTimer);
+                cpfLookupTimer = window.setTimeout(loadLatestClientByCpf, 450);
+            });
+            cpfInput.addEventListener("blur", loadLatestClientByCpf);
+        }
+
+        function showToast(message) {
+            var node = document.getElementById("c6Toast");
+            if (!node) return;
+            node.textContent = message;
+            node.classList.add("is-visible");
+            window.clearTimeout(showToast._t);
+            showToast._t = window.setTimeout(function () {
+                node.classList.remove("is-visible");
+            }, 1800);
+        }
+
+        var form = document.querySelector("form[action='/c6-inss']");
+        if (form) {
+            var submitButton = form.querySelector(".c6-submit-btn");
+            form.addEventListener("submit", function () {
+                if (!submitButton) return;
+                submitButton.disabled = true;
+                submitButton.dataset.originalText = submitButton.textContent;
+                submitButton.textContent = submitButton.dataset.loadingText || "Enviando...";
+            });
+        }
+
+        document.querySelectorAll(".c6-copy-offer-btn").forEach(function (button) {
+            button.addEventListener("click", async function () {
+                var text = button.getAttribute("data-copy-offer") || "";
+                if (!text) return;
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(text);
+                } else {
+                    var textArea = document.createElement("textarea");
+                    textArea.value = text;
+                    textArea.setAttribute("readonly", "");
+                    textArea.style.position = "fixed";
+                    textArea.style.opacity = "0";
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    document.execCommand("copy");
+                    document.body.removeChild(textArea);
+                }
+                showToast("Proposta copiada");
+            });
+        });
     })();
 </script>
 {% endblock %}

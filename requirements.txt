@@ -6,3 +6,5 @@ python-multipart==0.0.20
 psycopg[binary]==3.2.9
 httpx==0.28.1
 openpyxl==3.1.5
+redis==5.0.8
+rq==1.16.2

@@ -22,6 +22,7 @@ from inss_db_app.importer import (
     export_updated_clients,
     export_updated_clients_from_latest_enrichment,
     import_phone_enrichments,
+    import_public_campaign_updates,
     import_files,
     normalize_base_segment,
     normalize_date_text,
@@ -451,6 +452,53 @@ def test_import_and_query_with_header_aliases(tmp_path: Path) -> None:
     assert rows[0]["cpf"] == "12345678900"
     assert rows[0]["telefone"] == "11999999999"
     assert rows[0]["semana"] == "18 a 24"
+
+
+def test_query_clients_keeps_occurrence_history_ordered_by_reference(tmp_path: Path) -> None:
+    jan_path = tmp_path / "jan.csv"
+    jan_path.write_text(
+        "CPF;NOME;UF;CIDADE;TELEFONE1\n"
+        "12345678900;MARIA SILVA;SP;SAO PAULO;11999999999\n",
+        encoding="utf-8",
+    )
+    feb_path = tmp_path / "feb.csv"
+    feb_path.write_text(
+        "CPF;NOME;UF;CIDADE;TELEFONE1\n"
+        "12345678900;MARIA SILVA;RJ;RIO DE JANEIRO;21999999999\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(session, ImportRequest(year=2026, month=1, user_name="teste", origin_folder=str(tmp_path), files=[jan_path]))
+    import_files(session, ImportRequest(year=2026, month=2, user_name="teste", origin_folder=str(tmp_path), files=[feb_path]))
+
+    rows = query_clients(session, FilterSet(cpf="12345678900"))
+    assert len(rows) == 2
+    assert rows[0]["uf"] == "RJ"
+    assert rows[0]["telefone"] == "21999999999"
+    assert rows[1]["uf"] == "SP"
+    assert rows[1]["telefone"] == "11999999999"
+
+
+def test_query_clients_pagination_uses_distinct_cpfs(tmp_path: Path) -> None:
+    csv_path = tmp_path / "pagination.csv"
+    csv_path.write_text(
+        "CPF;NOME;UF;CIDADE;TELEFONE1\n"
+        "11111111111;CLIENTE 1;SP;SAO PAULO;11999999991\n"
+        "22222222222;CLIENTE 2;RJ;RIO DE JANEIRO;21999999992\n"
+        "33333333333;CLIENTE 3;MG;BELO HORIZONTE;31999999993\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(session, ImportRequest(year=2026, month=2, user_name="teste", origin_folder=str(tmp_path), files=[csv_path]))
+
+    first_page = query_clients(session, FilterSet(), limit=2, offset=0)
+    second_page = query_clients(session, FilterSet(), limit=2, offset=2)
+
+    assert len(first_page) == 2
+    assert len(second_page) == 1
+    assert {row["cpf"] for row in first_page + second_page} == {"11111111111", "22222222222", "33333333333"}
 
 
 def test_query_clients_filters_by_phone_and_benefit(tmp_path: Path) -> None:
@@ -1433,3 +1481,41 @@ def test_query_clients_public_consolidates_operational_row_with_cadastral_data(t
     assert rows[0]["telefone"] == "21999887766"
     assert rows[0]["dt_nasc"] == "01/02/1980"
     assert rows[0]["idade"] == compute_age_from_birth("01/02/1980")
+
+
+def test_public_update_import_materializes_missing_prefeitura_matriculas(tmp_path: Path) -> None:
+    cadastro_csv = tmp_path / "pref_cadastro.csv"
+    cadastro_csv.write_text(
+        "CPF;NOME HIGIENIZADO;MATRICULA;TELEFONE_01;UF;CIDADE\n"
+        "06838941708;ESTELA MARES DA SILVA;00000169284;21988111995;RJ;DUQUE DE CAXIAS\n",
+        encoding="utf-8",
+    )
+    update_csv = tmp_path / "pref_update.csv"
+    update_csv.write_text(
+        "CPF;MATRICULA;SERVICO_SERVIDOR;SITUACAO;MARGEM_DISPONIVEL;MARGEM_TOTAL\n"
+        "06838941708;00000169284;PREFEITURA DUQUE CAXIAS;ATIVO - ATIVO;602,61;602,61\n"
+        "06838941708;00000462187;PREFEITURA DUQUE CAXIAS;ATIVO - ATIVO;263,39;263,39\n",
+        encoding="utf-8",
+    )
+
+    session = make_session()
+    import_files(
+        session,
+        ImportRequest(year=2025, month=8, user_name="teste", origin_folder=str(tmp_path), files=[cadastro_csv], base_segment="PREFEITURA", base_source="DUQUE DE CAXIAS"),
+    )
+
+    summary = import_public_campaign_updates(
+        session,
+        [update_csv],
+        base_segment="PREFEITURA",
+        source_name="DUQUE DE CAXIAS",
+        imported_by="teste",
+    )
+
+    assert summary.clients_updated == 1
+    rows = query_clients(session, FilterSet(base_segment="PREFEITURA", cpf="06838941708"))
+    assert len(rows) == 2
+    assert {row["matricula"] for row in rows} == {"00000169284", "00000462187"}
+    by_matricula = {row["matricula"]: row for row in rows}
+    assert by_matricula["00000169284"]["vl_margem"] == Decimal("602.61")
+    assert by_matricula["00000462187"]["vl_margem"] == Decimal("263.39")

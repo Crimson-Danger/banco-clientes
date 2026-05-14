@@ -20,6 +20,9 @@ class ImportBatch(Base):
     base_source: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     usuario: Mapped[str] = mapped_column(String(120), nullable=False, default="operador")
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="PENDENTE")
+    queue_backend: Mapped[str] = mapped_column(String(20), nullable=False, default="thread")
+    queue_name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    queue_job_id: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     data_importacao: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
     resumo: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
@@ -109,6 +112,7 @@ class Client(Base):
     melhor_telefone: Mapped[str] = mapped_column(String(20), nullable=False, default="")
     tem_telefone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     do_not_call: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    do_not_call_reason: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     tem_inss: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     tem_governo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     pis_atual: Mapped[str] = mapped_column(String(20), nullable=False, default="")
@@ -164,22 +168,11 @@ class ExportJob(Base):
     filters_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
     include_audit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     file_format: Mapped[str] = mapped_column(String(10), nullable=False, default="xlsx")
+    queue_backend: Mapped[str] = mapped_column(String(20), nullable=False, default="thread")
+    queue_name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    queue_job_id: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     output_file: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     total_records: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC), nullable=False, index=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
-
-
-class ImportJob(Base):
-    __tablename__ = "import_jobs"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    batch_id: Mapped[int] = mapped_column(ForeignKey("import_batches.id"), nullable=False, index=True)
-    requested_by: Mapped[str] = mapped_column(String(120), nullable=False, default="operador", index=True)
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="PENDENTE", index=True)
-    request_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC), nullable=False, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -253,6 +246,7 @@ class AppUser(Base):
     can_view_dashboard: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     can_import: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_search: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    can_access_consignado_inss: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_export: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_view_history: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_delete_batches: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
