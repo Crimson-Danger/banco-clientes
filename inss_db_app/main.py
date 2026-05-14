@@ -1713,13 +1713,44 @@ def clients_page(
             bool(selected_servico.strip()),
         ]
     )
+    quick_only_lookup = bool(filters.quick_value.strip()) and not any(
+        [
+            filters.year is not None,
+            filters.month is not None,
+            bool(filters.week.strip()),
+            bool(filters.uf.strip()),
+            bool(filters.city.strip()),
+            bool(filters.esp.strip()),
+            filters.margin_min is not None,
+            filters.margin_max is not None,
+            filters.age_min is not None,
+            filters.age_max is not None,
+            filters.has_phone is not None,
+            bool(filters.source_file.strip()),
+            bool(filters.base_source.strip()),
+            bool(filters.cpf.strip()),
+            bool(filters.phone.strip()),
+            bool(filters.ddd.strip()),
+            bool(filters.name.strip()),
+            bool(selected_matricula.strip()),
+            bool(selected_servico.strip()),
+        ]
+    )
     total_results = 0
     pagination = build_pagination(total_results, 1, CLIENTS_PAGE_SIZE)
     results: list[dict[str, object]] = []
     if has_active_lookup:
-        total_results = count_client_results(session, filters)
-        pagination = build_pagination(total_results, safe_page, CLIENTS_PAGE_SIZE)
-        results = query_clients(session, filters, limit=CLIENTS_PAGE_SIZE, offset=int(pagination["offset"]))
+        if quick_only_lookup and safe_page == 1:
+            # Fast path for quick search: avoid expensive count on first render.
+            prefetched = query_clients(session, filters, limit=CLIENTS_PAGE_SIZE + 1, offset=0)
+            has_next_page = len(prefetched) > CLIENTS_PAGE_SIZE
+            results = prefetched[:CLIENTS_PAGE_SIZE]
+            total_results = len(results) + (1 if has_next_page else 0)
+            pagination = build_pagination(total_results, 1, CLIENTS_PAGE_SIZE)
+        else:
+            total_results = count_client_results(session, filters)
+            pagination = build_pagination(total_results, safe_page, CLIENTS_PAGE_SIZE)
+            results = query_clients(session, filters, limit=CLIENTS_PAGE_SIZE, offset=int(pagination["offset"]))
     highlight = results[0] if results and has_active_lookup else None
     public_rows = results if normalized_segment in {"GOVERNO", "PREFEITURA"} else []
     has_public_matriculas = False
